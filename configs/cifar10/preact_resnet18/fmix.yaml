@@ -1,0 +1,24 @@
+dataset: cifar10
+recipe: openmixup
+model: preact_resnet18
+method: fmix
+data_dir: ./data
+output_dir: ./runs/fmix
+download: false
+augment: true
+
+training:
+  epochs: 400
+  batch_size: 100
+  lr: 0.1
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler: cosine
+  milestones: []
+
+fmix:
+  alpha: 0.2
+  decay_power: 3.0
+  max_soft: 0.0
+  reformulate: false
+  prob: 1.0

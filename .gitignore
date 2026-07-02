@@ -206,6 +206,12 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Local datasets and experiment outputs
+/data/
+/runs/
+/checkpoints/
+/saved_models/
+
 # PyPI configuration file
 .pypirc
 
