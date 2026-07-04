@@ -163,6 +163,16 @@ The matching FMix legacy config keeps the same training schedule and adds
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_fmix_legacy.sh --device xla --num-cores 8
 ```
 
+To mirror the official FMix Tiny-ImageNet script more closely, use the paper
+config: `200 epochs`, global batch `128`, `lr=0.1`, `weight_decay=1e-4`,
+step milestones `150,180`, no train validation split, and the official Tiny
+validation set each epoch. On 4 TPU devices use the XLA config with per-device
+batch `32`:
+
+```bash
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_fmix_paper_xla4.sh --device xla --num-cores 4
+```
+
 Evaluate ImageNet-A with a checkpoint:
 
 ```bash
