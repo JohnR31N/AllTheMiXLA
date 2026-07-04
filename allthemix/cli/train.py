@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 if __package__ is None or __package__ == "":
@@ -28,7 +28,14 @@ from allthemix.data import build_datasets
 from allthemix.data.datasets import IMAGENET_A_INDICES_IN_1K, IMAGENET_A_NUM_CLASSES
 from allthemix.methods import FMix, MixUp
 from allthemix.networks import build_model
-from allthemix.cli.presets import DATASETS, RECIPES, get_dataset_preset, get_recipe_preset, preset_dict
+from allthemix.cli.presets import (
+    DATASETS,
+    RECIPES,
+    get_dataset_preset,
+    get_recipe_preset,
+    normalize_dataset_name,
+    preset_dict,
+)
 from allthemix.training.losses import fmix_cross_entropy, mixup_cross_entropy
 
 
@@ -59,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--momentum", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
-    parser.add_argument("--scheduler", choices=["cosine", "multistep"], default=None)
+    parser.add_argument("--scheduler", choices=["cosine", "multistep", "step"], default=None)
     parser.add_argument("--milestones", type=int, nargs="*", default=None)
 
     parser.add_argument("--alpha", type=float, default=None)
@@ -72,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xla"], default="auto")
     parser.add_argument("--num-cores", type=int, default=1, help="XLA processes to spawn when --device xla.")
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--max-train-steps", type=int, default=None, help="Limit steps per epoch for smoke tests.")
     parser.add_argument("--max-val-steps", type=int, default=None, help="Limit validation steps for smoke tests.")
@@ -121,9 +128,26 @@ def _choose(
     return raw_config.get(key, default)
 
 
+def _normalize_scheduler_name(name: Any) -> str:
+    scheduler = str(name).lower()
+    if scheduler == "step":
+        return "multistep"
+    return scheduler
+
+
+def _config_limit(raw_config: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = raw_config.get(key)
+        if value is None:
+            continue
+        value = int(value)
+        return None if value < 0 else value
+    return None
+
+
 def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None = None) -> dict[str, Any]:
     raw_config = raw_config or {}
-    dataset_name = args.dataset or raw_config.get("dataset", "cifar10")
+    dataset_name = normalize_dataset_name(args.dataset or raw_config.get("dataset", "cifar10"))
     recipe_name = args.recipe or raw_config.get("recipe", "openmixup")
     method_name = args.method or raw_config.get("method", "fmix")
     dataset = get_dataset_preset(dataset_name)
@@ -131,7 +155,10 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
     method_section = _section(raw_config, method_name)
     fmix_section = _section(raw_config, "fmix")
 
-    config_augment = raw_config.get("use_basic_augmentation", raw_config.get("augment", True))
+    config_augment = raw_config.get(
+        "use_basic_augmentation",
+        raw_config.get("augment", raw_config.get("basic_aug", True)),
+    )
     use_basic_augmentation = bool(config_augment)
     if args.no_augment is True:
         use_basic_augmentation = False
@@ -150,7 +177,7 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "method": method_name,
         "data_dir": args.data_dir or raw_config.get("data_dir", "./data"),
         "output_dir": args.output_dir or raw_config.get("output_dir", "./runs/fmix"),
-        "checkpoint": args.checkpoint or raw_config.get("checkpoint"),
+        "checkpoint": args.checkpoint or raw_config.get("checkpoint") or raw_config.get("resume_checkpoint") or None,
         "download": bool(args.download if args.download is not None else raw_config.get("download", False)),
         "use_basic_augmentation": use_basic_augmentation,
         "num_classes": int(raw_config.get("num_classes", dataset.num_classes)),
@@ -159,11 +186,22 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "std": dataset.std,
         "epochs": _choose(args, raw_config, "epochs", "training", "epochs", recipe.epochs),
         "batch_size": _choose(args, raw_config, "batch_size", "training", "batch_size", recipe.batch_size),
-        "lr": _choose(args, raw_config, "lr", "training", "lr", recipe.lr),
+        "lr": _choose(args, raw_config, "lr", "training", "lr", raw_config.get("learning_rate", recipe.lr)),
         "momentum": _choose(args, raw_config, "momentum", "training", "momentum", recipe.momentum),
         "weight_decay": _choose(args, raw_config, "weight_decay", "training", "weight_decay", recipe.weight_decay),
-        "scheduler": _choose(args, raw_config, "scheduler", "training", "scheduler", recipe.scheduler),
-        "milestones": _choose(args, raw_config, "milestones", "training", "milestones", list(recipe.milestones)),
+        "scheduler": _normalize_scheduler_name(
+            _choose(args, raw_config, "scheduler", "training", "scheduler", raw_config.get("lr_schedule", recipe.scheduler))
+        ),
+        "milestones": _choose(
+            args,
+            raw_config,
+            "milestones",
+            "training",
+            "milestones",
+            raw_config.get("lr_decay_epochs", list(recipe.milestones)),
+        ),
+        "lr_decay_rate": float(raw_config.get("lr_decay_rate", 0.1)),
+        "min_learning_rate": float(raw_config.get("min_learning_rate", 0.0)),
         "alpha": args.alpha if args.alpha is not None else method_section.get("alpha", fmix_section.get("alpha", recipe.alpha)),
         "decay_power": _choose(args, raw_config, "decay_power", "fmix", "decay_power", recipe.decay_power),
         "max_soft": _choose(args, raw_config, "max_soft", "fmix", "max_soft", recipe.max_soft),
@@ -171,6 +209,13 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "reformulate": _choose(args, raw_config, "reformulate", "fmix", "reformulate", False),
         "method_prob": method_prob,
         "fmix_prob": method_prob,
+        "validation_split": float(raw_config.get("validation_split", 0.0)),
+        "eval_on_test_each_epoch": bool(raw_config.get("eval_on_test_each_epoch", True)),
+        "final_test": bool(raw_config.get("final_test", False)),
+        "run_name": raw_config.get("run_name", ""),
+        "save_checkpoint": bool(raw_config.get("save_checkpoint", True)),
+        "save_best_only": bool(raw_config.get("save_best_only", False)),
+        "checkpoint_dir": raw_config.get("checkpoint_dir"),
     }
     return config
 
@@ -179,6 +224,42 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def apply_validation_split(
+    train_set,
+    val_set,
+    preset,
+    recipe,
+    config: dict[str, Any],
+    seed: int,
+):
+    split = float(config["validation_split"])
+    if train_set is None or split <= 0:
+        return train_set, val_set, None
+    if split >= 1:
+        raise ValueError(f"validation_split must be in [0, 1), got {split}.")
+
+    eval_train_set, _ = build_datasets(
+        preset,
+        recipe.transform_profile,
+        data_dir=config["data_dir"],
+        download=bool(config["download"]),
+        use_basic_augmentation=False,
+    )
+
+    num_total = len(train_set)
+    num_val = max(1, int(round(num_total * split)))
+    num_train = num_total - num_val
+    generator = torch.Generator().manual_seed(seed)
+    permutation = torch.randperm(num_total, generator=generator).tolist()
+    train_indices = permutation[:num_train]
+    val_indices = permutation[num_train:]
+
+    split_train_set = Subset(train_set, train_indices)
+    split_val_set = Subset(eval_train_set, val_indices)
+    test_set = val_set
+    return split_train_set, split_val_set, test_set
 
 
 def _xla_rank(xm: Any, xr: Any | None = None) -> int:
@@ -371,8 +452,16 @@ def prepare_state_dict_for_model(state_dict: dict[str, Any], model: torch.nn.Mod
 
 def make_scheduler(optimizer: optim.Optimizer, config: dict[str, Any]):
     if config["scheduler"] == "cosine":
-        return optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(config["epochs"]), eta_min=0.0)
-    return optim.lr_scheduler.MultiStepLR(optimizer, milestones=list(config["milestones"]), gamma=0.1)
+        return optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=int(config["epochs"]),
+            eta_min=float(config["min_learning_rate"]),
+        )
+    return optim.lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=list(config["milestones"]),
+        gamma=float(config["lr_decay_rate"]),
+    )
 
 
 def build_batch_mixer(config: dict[str, Any]):
@@ -568,8 +657,14 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         rank = 0
         world_size = 1
 
-    set_seed(args.seed + rank)
     raw_config = load_config(args.config)
+    if args.seed is None:
+        args.seed = int(raw_config.get("seed", 1))
+    set_seed(args.seed + rank)
+    if args.max_train_steps is None:
+        args.max_train_steps = _config_limit(raw_config, "max_train_steps")
+    if args.max_val_steps is None:
+        args.max_val_steps = _config_limit(raw_config, "max_val_steps", "max_eval_steps")
     config = resolved_config(args, raw_config)
     preset = get_dataset_preset(config["dataset"])
     recipe = get_recipe_preset(config["dataset"], config["recipe"])
@@ -581,6 +676,9 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         download=bool(config["download"]),
         use_basic_augmentation=bool(config["use_basic_augmentation"]),
     )
+    train_set, val_set, test_set = apply_validation_split(train_set, val_set, preset, recipe, config, args.seed)
+    if bool(config["eval_on_test_each_epoch"]) and test_set is not None:
+        val_set = test_set
 
     distributed = world_size > 1
     train_sampler = (
@@ -589,6 +687,11 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         else None
     )
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False) if distributed else None
+    test_sampler = (
+        DistributedSampler(test_set, num_replicas=world_size, rank=rank, shuffle=False)
+        if test_set is not None and distributed
+        else None
+    )
 
     train_loader = None
     if train_set is not None:
@@ -611,11 +714,24 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         pin_memory=device.type == "cuda",
         persistent_workers=args.num_workers > 0,
     )
+    test_loader = None
+    if test_set is not None:
+        test_loader = DataLoader(
+            test_set,
+            batch_size=int(config["batch_size"]),
+            shuffle=False,
+            sampler=test_sampler,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=args.num_workers > 0,
+        )
 
     if use_xla:
         if train_loader is not None:
             train_loader = pl.MpDeviceLoader(train_loader, device)
         val_loader = pl.MpDeviceLoader(val_loader, device)
+        if test_loader is not None:
+            test_loader = pl.MpDeviceLoader(test_loader, device)
 
     model = build_model(str(config["model"]), num_classes=int(config["num_classes"]))
     if config["checkpoint"]:
@@ -625,7 +741,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         print_master(f"Loaded checkpoint {config['checkpoint']}{suffix}", use_xla, xm)
     model = model.to(device)
 
-    run_dir = Path(config["output_dir"]) / config["dataset"] / config["recipe"]
+    if config["run_name"]:
+        run_dir = Path(config["output_dir"]) / str(config["run_name"])
+    else:
+        run_dir = Path(config["output_dir"]) / config["dataset"] / config["recipe"]
+    checkpoint_root = (
+        Path(config["checkpoint_dir"]) / str(config["run_name"])
+        if config["checkpoint_dir"] and config["run_name"]
+        else Path(config["checkpoint_dir"])
+        if config["checkpoint_dir"]
+        else run_dir
+    )
     if is_master(use_xla, xm, xr):
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "config.json").write_text(
@@ -680,11 +806,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
 
         if val_acc > best_acc:
             best_acc = val_acc
-            if is_master(use_xla, xm, xr):
-                save_checkpoint(run_dir / "best.pt", model, optimizer, scheduler, epoch, best_acc, config, use_xla, xm)
-        if args.save_every and epoch % args.save_every == 0 and is_master(use_xla, xm, xr):
+            if bool(config["save_checkpoint"]) and is_master(use_xla, xm, xr):
+                save_checkpoint(checkpoint_root / "best.pt", model, optimizer, scheduler, epoch, best_acc, config, use_xla, xm)
+        if (
+            bool(config["save_checkpoint"])
+            and not bool(config["save_best_only"])
+            and args.save_every
+            and epoch % args.save_every == 0
+            and is_master(use_xla, xm, xr)
+        ):
             save_checkpoint(
-                run_dir / f"epoch_{epoch:04d}.pt",
+                checkpoint_root / f"epoch_{epoch:04d}.pt",
                 model,
                 optimizer,
                 scheduler,
@@ -703,8 +835,11 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             xr,
         )
 
-    if is_master(use_xla, xm, xr):
-        save_checkpoint(run_dir / "last.pt", model, optimizer, scheduler, int(config["epochs"]), best_acc, config, use_xla, xm)
+    if bool(config["save_checkpoint"]) and not bool(config["save_best_only"]) and is_master(use_xla, xm, xr):
+        save_checkpoint(checkpoint_root / "last.pt", model, optimizer, scheduler, int(config["epochs"]), best_acc, config, use_xla, xm)
+    if bool(config["final_test"]) and test_loader is not None:
+        test_loss, test_acc = evaluate(model, test_loader, device, int(config["epochs"]), config, args, use_xla, xm)
+        print_master(f"final_test_loss={test_loss:.4f} final_test_top1={test_acc:.2f}", use_xla, xm, xr)
     print_master(f"Finished. best_top1={best_acc:.2f}", use_xla, xm, xr)
 
 

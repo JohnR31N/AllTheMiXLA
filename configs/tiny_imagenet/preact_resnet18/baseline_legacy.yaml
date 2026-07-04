@@ -1,0 +1,37 @@
+dataset: tiny_imagenet
+data_dir: ./data
+model: preact_resnet18
+method: baseline
+
+batch_size: 128
+epochs: 200
+max_train_steps: -1
+max_eval_steps: -1
+
+validation_split: 0.1
+eval_on_test_each_epoch: false
+final_test: true
+
+learning_rate: 0.1
+momentum: 0.9
+weight_decay: 0.0005
+lr_schedule: step
+min_learning_rate: 0.0
+lr_decay_epochs: [150, 180]
+lr_decay_rate: 0.1
+
+basic_aug: true
+seed: 0
+
+save_csv: true
+output_dir: ./outputs
+output_name: ""
+run_name: tiny_imagenet_preact_resnet18_baseline
+
+save_checkpoint: true
+checkpoint_dir: ./checkpoints
+save_best_only: true
+resume_checkpoint: ""
+
+distributed: true
+log_time: true

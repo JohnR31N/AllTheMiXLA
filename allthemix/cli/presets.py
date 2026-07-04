@@ -61,6 +61,14 @@ DATASETS: dict[str, DatasetPreset] = {
 }
 
 
+DATASET_ALIASES = {
+    "tiny_imagenet": "tinyimagenet",
+    "tiny-imagenet": "tinyimagenet",
+    "imagenet-a": "imagenet_a",
+    "imageneta": "imagenet_a",
+}
+
+
 OPENMIXUP_RECIPES: dict[str, RecipePreset] = {
     "cifar10": RecipePreset(
         epochs=400,
@@ -179,7 +187,13 @@ RECIPES = {
 }
 
 
+def normalize_dataset_name(dataset: str) -> str:
+    normalized = dataset.lower().replace(" ", "_")
+    return DATASET_ALIASES.get(normalized, normalized)
+
+
 def get_dataset_preset(dataset: str) -> DatasetPreset:
+    dataset = normalize_dataset_name(dataset)
     try:
         return DATASETS[dataset]
     except KeyError as exc:
@@ -188,6 +202,7 @@ def get_dataset_preset(dataset: str) -> DatasetPreset:
 
 
 def get_recipe_preset(dataset: str, recipe: str) -> RecipePreset:
+    dataset = normalize_dataset_name(dataset)
     try:
         return RECIPES[recipe][dataset]
     except KeyError as exc:
@@ -196,6 +211,7 @@ def get_recipe_preset(dataset: str, recipe: str) -> RecipePreset:
 
 
 def preset_dict(dataset: str, recipe: str) -> dict[str, object]:
+    dataset = normalize_dataset_name(dataset)
     return {
         "dataset": asdict(get_dataset_preset(dataset)),
         "recipe": asdict(get_recipe_preset(dataset, recipe)),

@@ -145,6 +145,14 @@ bash scripts/experiment_run/run_cifar100_preact_resnet18_baseline.sh --download 
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_baseline.sh --device xla --num-cores 8
 ```
 
+To mirror the older Tiny-ImageNet baseline config more closely
+(`200 epochs`, `batch_size=128`, `lr=0.1`, `weight_decay=5e-4`,
+`step` milestones `150,180`, `validation_split=0.1`, final test enabled), run:
+
+```bash
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_baseline_legacy.sh --device xla --num-cores 8
+```
+
 Evaluate ImageNet-A with a checkpoint:
 
 ```bash
