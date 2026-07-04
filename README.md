@@ -105,7 +105,7 @@ RECREATE_VENV=1 bash scripts/setup_tpu_venvxla.sh
 Verify TPU visibility:
 
 ```bash
-python -c "import torch_xla.core.xla_model as xm; print(xm.get_xla_supported_devices('TPU'))"
+python -c "import torch_xla.core.xla_model as xm; print(xm.get_xla_supported_devices()); print(xm.xla_real_devices())"
 ```
 
 Then run:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import random
 import sys
@@ -692,7 +693,8 @@ def main() -> None:
     if should_spawn:
         if xla_modules is None:
             raise RuntimeError("PyTorch/XLA is not installed. Cannot spawn XLA workers.")
-        xla_modules["xmp"].spawn(run_worker, args=(args,), nprocs=args.num_cores)
+        os.environ.setdefault("TPU_NUM_DEVICES", str(args.num_cores))
+        xla_modules["xmp"].spawn(run_worker, args=(args,), nprocs=None)
     else:
         run_worker(0, args)
 

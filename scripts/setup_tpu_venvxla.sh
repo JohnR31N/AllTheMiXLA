@@ -90,7 +90,7 @@ Activate it with:
   export PJRT_DEVICE=TPU
 
 Verify TPU visibility with:
-  PJRT_DEVICE=TPU python -c "import torch_xla.core.xla_model as xm; print(xm.get_xla_supported_devices('TPU'))"
+  PJRT_DEVICE=TPU python -c "import torch_xla.core.xla_model as xm; print(xm.get_xla_supported_devices()); print(xm.xla_real_devices())"
 
 Example smoke run:
   PJRT_DEVICE=TPU python -m allthemix.cli.train --config configs/cifar10/preact_resnet18/mixup.yaml --download --device xla --num-cores 8 --num-workers 0 --epochs 1 --batch-size 32 --max-train-steps 20 --max-val-steps 5
