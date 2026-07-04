@@ -37,9 +37,10 @@ def _optional_xla_import() -> dict[str, Any] | None:
         import torch_xla.core.xla_model as xm
         import torch_xla.distributed.parallel_loader as pl
         import torch_xla.distributed.xla_multiprocessing as xmp
+        import torch_xla.runtime as xr
     except ModuleNotFoundError:
         return None
-    return {"xm": xm, "pl": pl, "xmp": xmp}
+    return {"xm": xm, "pl": pl, "xmp": xmp, "xr": xr}
 
 
 def parse_args() -> argparse.Namespace:
@@ -180,15 +181,40 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def is_master(use_xla: bool, xm: Any | None) -> bool:
+def _xla_rank(xm: Any, xr: Any | None = None) -> int:
+    if xr is not None and hasattr(xr, "global_ordinal"):
+        return int(xr.global_ordinal())
+    if hasattr(xm, "get_ordinal"):
+        return int(xm.get_ordinal())
+    return 0
+
+
+def _xla_world_size(xm: Any, xr: Any | None = None) -> int:
+    if xr is not None and hasattr(xr, "world_size"):
+        return int(xr.world_size())
+    if hasattr(xm, "xrt_world_size"):
+        return int(xm.xrt_world_size())
+    if hasattr(xm, "world_size"):
+        return int(xm.world_size())
+    return 1
+
+
+def is_master(use_xla: bool, xm: Any | None, xr: Any | None = None) -> bool:
     if not use_xla:
         return True
-    return xm.is_master_ordinal()
+    if xr is not None and hasattr(xr, "global_ordinal"):
+        return int(xr.global_ordinal()) == 0
+    if hasattr(xm, "is_master_ordinal"):
+        return bool(xm.is_master_ordinal())
+    return _xla_rank(xm, xr) == 0
 
 
-def print_master(message: str, use_xla: bool, xm: Any | None) -> None:
+def print_master(message: str, use_xla: bool, xm: Any | None, xr: Any | None = None) -> None:
     if use_xla:
-        xm.master_print(message)
+        if hasattr(xm, "master_print"):
+            xm.master_print(message)
+        elif is_master(use_xla, xm, xr):
+            print(message, flush=True)
     else:
         print(message, flush=True)
 
@@ -256,14 +282,6 @@ def reduce_metric_tensors(
 
 def _tensor_float(value: torch.Tensor) -> float:
     return float(value.detach().cpu().item())
-
-
-def _xla_world_size(xm: Any) -> int:
-    if hasattr(xm, "xrt_world_size"):
-        return int(xm.xrt_world_size())
-    if hasattr(xm, "world_size"):
-        return int(xm.world_size())
-    return 1
 
 
 def _log_xla_progress(
@@ -448,7 +466,7 @@ def train_one_epoch(
 
         if args.log_interval and step % args.log_interval == 0:
             if use_xla:
-                if xm.is_master_ordinal():
+                if is_master(use_xla, xm):
                     xm.add_step_closure(
                         _log_xla_progress,
                         args=(loss_sum, correct, total, epoch, step, start),
@@ -535,11 +553,12 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
 
     xm = xla_modules["xm"] if use_xla else None
     pl = xla_modules["pl"] if use_xla else None
+    xr = xla_modules["xr"] if use_xla else None
 
     if use_xla:
         device = xm.xla_device()
-        rank = xm.get_ordinal()
-        world_size = _xla_world_size(xm)
+        rank = _xla_rank(xm, xr)
+        world_size = _xla_world_size(xm, xr)
     elif args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
         device = torch.device("cuda")
         rank = 0
@@ -607,7 +626,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
     model = model.to(device)
 
     run_dir = Path(config["output_dir"]) / config["dataset"] / config["recipe"]
-    if is_master(use_xla, xm):
+    if is_master(use_xla, xm, xr):
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "config.json").write_text(
             json.dumps(
@@ -624,6 +643,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         f"world_size={world_size}; config={json.dumps(config, sort_keys=True)}",
         use_xla,
         xm,
+        xr,
     )
 
     if train_loader is None or int(config["epochs"]) <= 0:
@@ -632,9 +652,10 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                 "No train split is available and no checkpoint was provided; evaluating randomly initialized weights.",
                 use_xla,
                 xm,
+                xr,
             )
         val_loss, val_acc = evaluate(model, val_loader, device, 0, config, args, use_xla, xm)
-        print_master(f"eval_loss={val_loss:.4f} eval_top1={val_acc:.2f}", use_xla, xm)
+        print_master(f"eval_loss={val_loss:.4f} eval_top1={val_acc:.2f}", use_xla, xm, xr)
         return
 
     optimizer = optim.SGD(
@@ -659,9 +680,9 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
 
         if val_acc > best_acc:
             best_acc = val_acc
-            if is_master(use_xla, xm):
+            if is_master(use_xla, xm, xr):
                 save_checkpoint(run_dir / "best.pt", model, optimizer, scheduler, epoch, best_acc, config, use_xla, xm)
-        if args.save_every and epoch % args.save_every == 0 and is_master(use_xla, xm):
+        if args.save_every and epoch % args.save_every == 0 and is_master(use_xla, xm, xr):
             save_checkpoint(
                 run_dir / f"epoch_{epoch:04d}.pt",
                 model,
@@ -679,21 +700,23 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             f"val_loss={val_loss:.4f} val_top1={val_acc:.2f} best_top1={best_acc:.2f}",
             use_xla,
             xm,
+            xr,
         )
 
-    if is_master(use_xla, xm):
+    if is_master(use_xla, xm, xr):
         save_checkpoint(run_dir / "last.pt", model, optimizer, scheduler, int(config["epochs"]), best_acc, config, use_xla, xm)
-    print_master(f"Finished. best_top1={best_acc:.2f}", use_xla, xm)
+    print_master(f"Finished. best_top1={best_acc:.2f}", use_xla, xm, xr)
 
 
 def main() -> None:
     args = parse_args()
+    if args.device == "xla" and args.num_cores > 1:
+        os.environ.setdefault("TPU_NUM_DEVICES", str(args.num_cores))
     xla_modules = _optional_xla_import()
     should_spawn = args.device == "xla" and args.num_cores > 1
     if should_spawn:
         if xla_modules is None:
             raise RuntimeError("PyTorch/XLA is not installed. Cannot spawn XLA workers.")
-        os.environ.setdefault("TPU_NUM_DEVICES", str(args.num_cores))
         xla_modules["xmp"].spawn(run_worker, args=(args,), nprocs=None)
     else:
         run_worker(0, args)
