@@ -2,6 +2,7 @@ dataset: tinyimagenet
 recipe: openmixup
 model: preact_resnet18
 method: fmix
+cross_device_shuffle: true
 data_dir: ./data
 output_dir: ./runs/fmix
 download: false

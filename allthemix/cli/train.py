@@ -229,6 +229,7 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "reformulate": _choose(args, raw_config, "reformulate", "fmix", "reformulate", False),
         "method_prob": method_prob,
         "fmix_prob": method_prob,
+        "cross_device_shuffle": bool(raw_config.get("cross_device_shuffle", False)),
         "validation_split": float(raw_config.get("validation_split", 0.0)),
         "eval_on_test_each_epoch": bool(raw_config.get("eval_on_test_each_epoch", True)),
         "final_test": bool(raw_config.get("final_test", False)),
@@ -516,6 +517,27 @@ def mixed_sample_cross_entropy(logits: torch.Tensor, mixed, config: dict[str, An
     raise ValueError(f"Unsupported mixed-sample method: {config['method']}")
 
 
+def cross_device_shuffle_batch(
+    images: torch.Tensor,
+    targets: torch.Tensor,
+    rank: int,
+    xm: Any,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    local_batch = int(images.size(0))
+    global_images = xm.all_gather(images, dim=0)
+    global_targets = xm.all_gather(targets, dim=0)
+
+    local_scores = torch.rand(local_batch, device=images.device)
+    global_scores = xm.all_gather(local_scores, dim=0)
+    global_index = torch.argsort(global_scores)
+
+    start = rank * local_batch
+    partner_index = global_index.narrow(0, start, local_batch)
+    partner_images = global_images.index_select(0, partner_index)
+    partner_targets = global_targets.index_select(0, partner_index)
+    return partner_images, partner_targets, partner_index
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader,
@@ -527,6 +549,8 @@ def train_one_epoch(
     args: argparse.Namespace,
     use_xla: bool,
     xm: Any | None,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> tuple[float, float]:
     model.train()
     if use_xla:
@@ -548,7 +572,11 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         if mixer is not None and config["method_prob"] > 0 and random.random() < config["method_prob"]:
-            mixed = mixer(images, targets)
+            if use_xla and bool(config["cross_device_shuffle"]) and world_size > 1:
+                partner_images, partner_targets, partner_index = cross_device_shuffle_batch(images, targets, rank, xm)
+                mixed = mixer(images, targets, partner_images, partner_targets, partner_index)
+            else:
+                mixed = mixer(images, targets)
             logits = model(mixed.images)
             loss = mixed_sample_cross_entropy(logits, mixed, config)
         else:
@@ -819,7 +847,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             train_sampler.set_epoch(epoch)
 
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, optimizer, mixer, device, epoch, config, args, use_xla, xm
+            model, train_loader, optimizer, mixer, device, epoch, config, args, use_xla, xm, rank, world_size
         )
         val_loss, val_acc = evaluate(model, val_loader, device, epoch, config, args, use_xla, xm)
         scheduler.step()

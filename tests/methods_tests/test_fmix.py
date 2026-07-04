@@ -35,6 +35,20 @@ class FMixTests(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(logits.grad)
 
+    def test_uses_external_partner_batch(self):
+        mixer = FMix(alpha=1.0, decay_power=3.0, size=(4, 4))
+        images = torch.zeros(2, 3, 4, 4)
+        partners = torch.ones(2, 3, 4, 4)
+        targets = torch.tensor([0, 1])
+        partner_targets = torch.tensor([2, 3])
+        index = torch.tensor([5, 6])
+
+        result = mixer(images, targets, partners, partner_targets, index)
+
+        self.assertEqual(result.images.shape, images.shape)
+        self.assertTrue(torch.equal(result.targets_b, partner_targets))
+        self.assertTrue(torch.equal(result.index, index))
+
 
 if __name__ == "__main__":
     unittest.main()

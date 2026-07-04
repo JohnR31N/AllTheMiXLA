@@ -186,7 +186,14 @@ class FMix:
         self.max_soft = float(max_soft)
         self.reformulate = bool(reformulate)
 
-    def __call__(self, images: torch.Tensor, targets: torch.Tensor) -> FMixResult:
+    def __call__(
+        self,
+        images: torch.Tensor,
+        targets: torch.Tensor,
+        partner_images: torch.Tensor | None = None,
+        partner_targets: torch.Tensor | None = None,
+        index: torch.Tensor | None = None,
+    ) -> FMixResult:
         if images.dim() != 4:
             raise ValueError(f"FMix expects NCHW images, got shape {tuple(images.shape)}")
 
@@ -197,14 +204,20 @@ class FMix:
             self.max_soft,
             self.reformulate,
         )
-        index = torch.randperm(images.size(0)).to(images.device)
+        if partner_images is None:
+            index = torch.randperm(images.size(0)).to(images.device)
+            partner_images = images[index]
+            partner_targets = targets[index]
+        elif partner_targets is None or index is None:
+            raise ValueError("partner_targets and index are required when partner_images is provided.")
+
         mask = torch.from_numpy(mask_np).to(device=images.device, dtype=images.dtype)
 
-        mixed = mask * images + (1 - mask) * images[index]
+        mixed = mask * images + (1 - mask) * partner_images
         return FMixResult(
             images=mixed,
             targets_a=targets,
-            targets_b=targets[index],
+            targets_b=partner_targets,
             lam=lam,
             index=index,
             mask=mask,

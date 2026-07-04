@@ -40,6 +40,7 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertEqual(config["method"], "mixup")
         self.assertEqual(config["alpha"], 1.0)
         self.assertEqual(config["method_prob"], 1.0)
+        self.assertTrue(config["cross_device_shuffle"])
         self.assertEqual(config["output_dir"], "./runs/mixup")
 
     def test_cli_method_overrides_config(self):

@@ -35,17 +35,30 @@ class MixUp:
     def __init__(self, alpha: float = 1.0) -> None:
         self.alpha = float(alpha)
 
-    def __call__(self, images: torch.Tensor, targets: torch.Tensor) -> MixUpResult:
+    def __call__(
+        self,
+        images: torch.Tensor,
+        targets: torch.Tensor,
+        partner_images: torch.Tensor | None = None,
+        partner_targets: torch.Tensor | None = None,
+        index: torch.Tensor | None = None,
+    ) -> MixUpResult:
         if images.dim() != 4:
             raise ValueError(f"MixUp expects NCHW images, got shape {tuple(images.shape)}")
 
         lam = sample_lam(self.alpha)
-        index = torch.randperm(images.size(0)).to(images.device)
-        mixed = lam * images + (1.0 - lam) * images[index]
+        if partner_images is None:
+            index = torch.randperm(images.size(0)).to(images.device)
+            partner_images = images[index]
+            partner_targets = targets[index]
+        elif partner_targets is None or index is None:
+            raise ValueError("partner_targets and index are required when partner_images is provided.")
+
+        mixed = lam * images + (1.0 - lam) * partner_images
         return MixUpResult(
             images=mixed,
             targets_a=targets,
-            targets_b=targets[index],
+            targets_b=partner_targets,
             lam=lam,
             index=index,
         )

@@ -61,6 +61,9 @@ data -> basic aug/preprocess -> batch -> optional FMix/MixUp method -> train loo
 FMix and MixUp are batch-level methods, so they run in the training loop after
 DataLoader batching. Choose one with `method: fmix` or `method: mixup` in the
 config, or use `method: baseline` to train with only basic augmentation.
+FMix/MixUp configs enable `cross_device_shuffle: true`, so on XLA multi-process
+runs the mixed partner batch is sampled from the gathered global batch rather
+than only from each process-local mini-batch.
 
 ## Quick Checks
 
