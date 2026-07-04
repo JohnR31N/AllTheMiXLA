@@ -50,6 +50,14 @@ def _optional_xla_import() -> dict[str, Any] | None:
     return {"xm": xm, "pl": pl, "xmp": xmp, "xr": xr}
 
 
+def _optional_xla_spawn_import():
+    try:
+        import torch_xla.distributed.xla_multiprocessing as xmp
+    except ModuleNotFoundError:
+        return None
+    return xmp
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MixUp/FMIX PyTorch/XLA trainer")
     parser.add_argument("--config", default=None, help="YAML/JSON config path, e.g. configs/cifar10/preact_resnet18/fmix.yaml.")
@@ -847,12 +855,12 @@ def main() -> None:
     args = parse_args()
     if args.device == "xla" and args.num_cores > 1:
         os.environ.setdefault("TPU_NUM_DEVICES", str(args.num_cores))
-    xla_modules = _optional_xla_import()
     should_spawn = args.device == "xla" and args.num_cores > 1
     if should_spawn:
-        if xla_modules is None:
+        xmp = _optional_xla_spawn_import()
+        if xmp is None:
             raise RuntimeError("PyTorch/XLA is not installed. Cannot spawn XLA workers.")
-        xla_modules["xmp"].spawn(run_worker, args=(args,), nprocs=None)
+        xmp.spawn(run_worker, args=(args,), nprocs=None, start_method="spawn")
     else:
         run_worker(0, args)
 
