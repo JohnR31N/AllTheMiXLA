@@ -6,6 +6,7 @@ Use ``python -m allthemix.cli.train --help`` for CLI options.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from pathlib import Path
@@ -234,6 +235,8 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "eval_on_test_each_epoch": bool(raw_config.get("eval_on_test_each_epoch", True)),
         "final_test": bool(raw_config.get("final_test", False)),
         "run_name": raw_config.get("run_name", ""),
+        "save_csv": bool(raw_config.get("save_csv", False)),
+        "output_name": raw_config.get("output_name", ""),
         "save_checkpoint": bool(raw_config.get("save_checkpoint", True)),
         "save_best_only": bool(raw_config.get("save_best_only", False)),
         "checkpoint_dir": raw_config.get("checkpoint_dir"),
@@ -319,6 +322,36 @@ def print_master(message: str, use_xla: bool, xm: Any | None, xr: Any | None = N
             print(message, flush=True)
     else:
         print(message, flush=True)
+
+
+CSV_FIELDS = [
+    "epoch",
+    "phase",
+    "lr",
+    "train_loss",
+    "train_top1",
+    "val_loss",
+    "val_top1",
+    "best_top1",
+    "test_loss",
+    "test_top1",
+]
+
+
+def metrics_csv_path(run_dir: Path, config: dict[str, Any]) -> Path:
+    output_name = str(config.get("output_name") or "").strip()
+    filename = f"{output_name}.csv" if output_name else "metrics.csv"
+    return run_dir / filename
+
+
+def append_metrics_csv(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
+    with path.open("a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
 
 
 def topk_correct(logits: torch.Tensor, targets: torch.Tensor, k: int = 1) -> int:
@@ -812,6 +845,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                 indent=2,
             )
         )
+    csv_path = metrics_csv_path(run_dir, config)
     print_master(
         f"Starting {str(config['method']).upper()} {config['dataset']}/{config['recipe']} on {device}; "
         f"world_size={world_size}; config={json.dumps(config, sort_keys=True)}",
@@ -829,6 +863,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                 xr,
             )
         val_loss, val_acc = evaluate(model, val_loader, device, 0, config, args, use_xla, xm)
+        if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            append_metrics_csv(
+                csv_path,
+                {
+                    "epoch": 0,
+                    "phase": "eval",
+                    "val_loss": f"{val_loss:.6f}",
+                    "val_top1": f"{val_acc:.6f}",
+                    "best_top1": f"{val_acc:.6f}",
+                },
+            )
         print_master(f"eval_loss={val_loss:.4f} eval_top1={val_acc:.2f}", use_xla, xm, xr)
         return
 
@@ -850,6 +895,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             model, train_loader, optimizer, mixer, device, epoch, config, args, use_xla, xm, rank, world_size
         )
         val_loss, val_acc = evaluate(model, val_loader, device, epoch, config, args, use_xla, xm)
+        epoch_lr = float(optimizer.param_groups[0]["lr"])
         scheduler.step()
 
         if val_acc > best_acc:
@@ -874,6 +920,20 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                 use_xla,
                 xm,
             )
+        if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            append_metrics_csv(
+                csv_path,
+                {
+                    "epoch": epoch,
+                    "phase": "train_val",
+                    "lr": f"{epoch_lr:.10g}",
+                    "train_loss": f"{train_loss:.6f}",
+                    "train_top1": f"{train_acc:.6f}",
+                    "val_loss": f"{val_loss:.6f}",
+                    "val_top1": f"{val_acc:.6f}",
+                    "best_top1": f"{best_acc:.6f}",
+                },
+            )
 
         print_master(
             f"epoch={epoch} train_loss={train_loss:.4f} train_top1={train_acc:.2f} "
@@ -887,6 +947,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         save_checkpoint(checkpoint_root / "last.pt", model, optimizer, scheduler, int(config["epochs"]), best_acc, config, use_xla, xm)
     if bool(config["final_test"]) and test_loader is not None:
         test_loss, test_acc = evaluate(model, test_loader, device, int(config["epochs"]), config, args, use_xla, xm)
+        if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            append_metrics_csv(
+                csv_path,
+                {
+                    "epoch": int(config["epochs"]),
+                    "phase": "final_test",
+                    "best_top1": f"{best_acc:.6f}",
+                    "test_loss": f"{test_loss:.6f}",
+                    "test_top1": f"{test_acc:.6f}",
+                },
+            )
         print_master(f"final_test_loss={test_loss:.4f} final_test_top1={test_acc:.2f}", use_xla, xm, xr)
     print_master(f"Finished. best_top1={best_acc:.2f}", use_xla, xm, xr)
 
