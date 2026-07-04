@@ -156,6 +156,13 @@ To mirror the older Tiny-ImageNet baseline config more closely
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_baseline_legacy.sh --device xla --num-cores 8
 ```
 
+The matching FMix legacy config keeps the same training schedule and adds
+`alpha=1.0`, `decay_power=3.0`, and cross-device shuffle:
+
+```bash
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_fmix_legacy.sh --device xla --num-cores 8
+```
+
 Evaluate ImageNet-A with a checkpoint:
 
 ```bash

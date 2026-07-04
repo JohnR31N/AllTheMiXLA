@@ -75,6 +75,22 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertTrue(config["final_test"])
         self.assertEqual(config["run_name"], "tiny_imagenet_preact_resnet18_baseline")
 
+    def test_legacy_tiny_fmix_config_matches_baseline_schedule(self):
+        raw_config = load_config("configs/tiny_imagenet/preact_resnet18/fmix_legacy.yaml")
+        config = resolved_config(_args(), raw_config)
+
+        self.assertEqual(config["dataset"], "tinyimagenet")
+        self.assertEqual(config["method"], "fmix")
+        self.assertEqual(config["batch_size"], 128)
+        self.assertEqual(config["epochs"], 200)
+        self.assertEqual(config["lr"], 0.1)
+        self.assertEqual(config["weight_decay"], 0.0005)
+        self.assertEqual(config["scheduler"], "multistep")
+        self.assertEqual(config["milestones"], [150, 180])
+        self.assertEqual(config["alpha"], 1.0)
+        self.assertTrue(config["cross_device_shuffle"])
+        self.assertEqual(config["run_name"], "tiny_imagenet_preact_resnet18_fmix")
+
 
 if __name__ == "__main__":
     unittest.main()
