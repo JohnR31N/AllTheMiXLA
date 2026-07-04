@@ -1,0 +1,17 @@
+dataset: cifar100
+recipe: openmixup
+model: preact_resnet18
+method: baseline
+data_dir: ./data
+output_dir: ./runs/baseline
+download: false
+use_basic_augmentation: true
+
+training:
+  epochs: 400
+  batch_size: 100
+  lr: 0.1
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler: cosine
+  milestones: []

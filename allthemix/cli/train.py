@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default=None, help="YAML/JSON config path, e.g. configs/cifar10/preact_resnet18/fmix.yaml.")
     parser.add_argument("--dataset", choices=sorted(DATASETS), default=None)
     parser.add_argument("--recipe", choices=sorted(RECIPES), default=None)
-    parser.add_argument("--method", choices=["eval", "fmix", "mixup", "none"], default=None)
+    parser.add_argument("--method", choices=["baseline", "eval", "fmix", "mixup", "none"], default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--download", action="store_true", default=None, help="Download CIFAR datasets if needed.")
@@ -387,7 +387,7 @@ def build_batch_mixer(config: dict[str, Any]):
         )
     if method == "mixup":
         return MixUp(alpha=float(config["alpha"]))
-    if method in {"none", "eval"}:
+    if method in {"baseline", "none", "eval"}:
         return None
     raise ValueError(f"Unsupported method: {config['method']}")
 

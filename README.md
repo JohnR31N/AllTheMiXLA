@@ -21,7 +21,7 @@ benchmark settings.
 
 - `allthemix/data`: dataset loading and preprocessing pipelines.
 - `allthemix/data/preprocessors`: sample-level basic augmentation and normalization.
-- `allthemix/methods`: batch-level FMix and MixUp method implementations.
+- `allthemix/methods`: batch-level FMix and MixUp method implementations; baseline skips this stage.
 - `allthemix/networks`: backbones, heads, classifiers, and model builder.
 - `allthemix/training`: losses and training utilities.
 - `allthemix/cli`: command-line training entry points and presets.
@@ -48,7 +48,7 @@ decay `1e-4` unless overridden on the CLI.
 The training path is:
 
 ```text
-data -> basic aug/preprocess -> batch -> FMix method -> train loop
+data -> basic aug/preprocess -> batch -> optional FMix/MixUp method -> train loop
 ```
 
 `basic aug` is sample-level augmentation inside the dataset transform:
@@ -60,7 +60,7 @@ data -> basic aug/preprocess -> batch -> FMix method -> train loop
 
 FMix and MixUp are batch-level methods, so they run in the training loop after
 DataLoader batching. Choose one with `method: fmix` or `method: mixup` in the
-config, or with `--method mixup` on the CLI.
+config, or use `method: baseline` to train with only basic augmentation.
 
 ## Quick Checks
 
@@ -135,6 +135,14 @@ Run the matching MixUp PreAct-ResNet-18 configs:
 bash scripts/experiment_run/run_cifar10_preact_resnet18_mixup.sh --download --device xla --num-cores 8
 bash scripts/experiment_run/run_cifar100_preact_resnet18_mixup.sh --download --device xla --num-cores 8
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_mixup.sh --device xla --num-cores 8
+```
+
+Run the no-mix baseline configs:
+
+```bash
+bash scripts/experiment_run/run_cifar10_preact_resnet18_baseline.sh --download --device xla --num-cores 8
+bash scripts/experiment_run/run_cifar100_preact_resnet18_baseline.sh --download --device xla --num-cores 8
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_baseline.sh --device xla --num-cores 8
 ```
 
 Evaluate ImageNet-A with a checkpoint:

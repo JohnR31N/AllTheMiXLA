@@ -54,6 +54,7 @@ class ImageNetAEvalTests(unittest.TestCase):
 
         self.assertIsInstance(fmix, FMix)
         self.assertIsInstance(mixup, MixUp)
+        self.assertIsNone(build_batch_mixer({"method": "baseline"}))
         self.assertIsNone(build_batch_mixer({"method": "none"}))
 
 

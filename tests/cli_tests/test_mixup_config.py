@@ -50,6 +50,14 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertEqual(config["alpha"], 0.4)
         self.assertEqual(config["method_prob"], 0.5)
 
+    def test_baseline_config_resolves_without_mix_method(self):
+        raw_config = load_config("configs/tiny_imagenet/preact_resnet18/baseline.yaml")
+        config = resolved_config(_args(), raw_config)
+
+        self.assertEqual(config["method"], "baseline")
+        self.assertEqual(config["output_dir"], "./runs/baseline")
+        self.assertEqual(config["dataset"], "tinyimagenet")
+
 
 if __name__ == "__main__":
     unittest.main()
