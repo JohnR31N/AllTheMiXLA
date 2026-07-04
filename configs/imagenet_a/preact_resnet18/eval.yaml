@@ -1,18 +1,19 @@
-dataset: tinyimagenet
-recipe: openmixup
+dataset: imagenet_a
+recipe: official
 model: preact_resnet18
-method: fmix
-data_dir: ./data
+method: eval
+data_dir: ./data/imagenet-a
 output_dir: ./runs/fmix
+checkpoint: null
 download: false
-use_basic_augmentation: true
+use_basic_augmentation: false
 
 training:
-  epochs: 400
+  epochs: 0
   batch_size: 100
-  lr: 0.2
+  lr: 0.0
   momentum: 0.9
-  weight_decay: 0.0001
+  weight_decay: 0.0
   scheduler: cosine
   milestones: []
 
@@ -21,4 +22,4 @@ fmix:
   decay_power: 3.0
   max_soft: 0.0
   reformulate: false
-  prob: 1.0
+  prob: 0.0

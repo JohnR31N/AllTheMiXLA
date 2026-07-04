@@ -1,3 +1,10 @@
-from .preact_resnet import PreActBasicBlock, PreActResNetNN, preact_resnet18, preact_resnet18_nn
+from .preact_resnet import PreActBasicBlock, PreActResNetBackbone, preact_resnet18_backbone
+from .torchvision_resnet import TorchvisionResNetBackbone, torch_resnet101_backbone
 
-__all__ = ["PreActBasicBlock", "PreActResNetNN", "preact_resnet18", "preact_resnet18_nn"]
+__all__ = [
+    "PreActBasicBlock",
+    "PreActResNetBackbone",
+    "TorchvisionResNetBackbone",
+    "preact_resnet18_backbone",
+    "torch_resnet101_backbone",
+]

@@ -1,4 +1,4 @@
-"""Train FMix PreAct-ResNet18 on CIFAR-10/100 or Tiny-ImageNet.
+"""Train MixUp/FMIX PreAct-ResNet18 on CIFAR-10/100 or Tiny-ImageNet.
 
 Use ``python -m allthemix.cli.train --help`` for CLI options.
 """
@@ -24,10 +24,11 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from allthemix.data import build_datasets
-from allthemix.methods.fmix import FMix
+from allthemix.data.datasets import IMAGENET_A_INDICES_IN_1K, IMAGENET_A_NUM_CLASSES
+from allthemix.methods import FMix, MixUp
 from allthemix.networks import build_model
 from allthemix.cli.presets import DATASETS, RECIPES, get_dataset_preset, get_recipe_preset, preset_dict
-from allthemix.training.losses import fmix_cross_entropy
+from allthemix.training.losses import fmix_cross_entropy, mixup_cross_entropy
 
 
 def _optional_xla_import() -> dict[str, Any] | None:
@@ -41,10 +42,11 @@ def _optional_xla_import() -> dict[str, Any] | None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="FMix PyTorch/XLA trainer")
+    parser = argparse.ArgumentParser(description="MixUp/FMIX PyTorch/XLA trainer")
     parser.add_argument("--config", default=None, help="YAML/JSON config path, e.g. configs/cifar10/preact_resnet18/fmix.yaml.")
     parser.add_argument("--dataset", choices=sorted(DATASETS), default=None)
     parser.add_argument("--recipe", choices=sorted(RECIPES), default=None)
+    parser.add_argument("--method", choices=["eval", "fmix", "mixup", "none"], default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--download", action="store_true", default=None, help="Download CIFAR datasets if needed.")
@@ -63,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-soft", type=float, default=None)
     parser.add_argument("--reformulate", action="store_true", default=None)
     parser.add_argument("--fmix-prob", type=float, default=None)
+    parser.add_argument("--mix-prob", type=float, default=None, help="Batch-level mix method probability.")
 
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xla"], default="auto")
     parser.add_argument("--num-cores", type=int, default=1, help="XLA processes to spawn when --device xla.")
@@ -71,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--max-train-steps", type=int, default=None, help="Limit steps per epoch for smoke tests.")
     parser.add_argument("--max-val-steps", type=int, default=None, help="Limit validation steps for smoke tests.")
+    parser.add_argument("--checkpoint", default=None, help="Load a model checkpoint before training/evaluation.")
     parser.add_argument("--save-every", type=int, default=0, help="Save periodic epoch checkpoints; 0 disables.")
     return parser.parse_args()
 
@@ -119,24 +123,35 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
     raw_config = raw_config or {}
     dataset_name = args.dataset or raw_config.get("dataset", "cifar10")
     recipe_name = args.recipe or raw_config.get("recipe", "openmixup")
+    method_name = args.method or raw_config.get("method", "fmix")
     dataset = get_dataset_preset(dataset_name)
     recipe = get_recipe_preset(dataset_name, recipe_name)
+    method_section = _section(raw_config, method_name)
+    fmix_section = _section(raw_config, "fmix")
 
-    config_augment = raw_config.get("augment", True)
-    augment = bool(config_augment)
+    config_augment = raw_config.get("use_basic_augmentation", raw_config.get("augment", True))
+    use_basic_augmentation = bool(config_augment)
     if args.no_augment is True:
-        augment = False
+        use_basic_augmentation = False
+
+    if args.mix_prob is not None:
+        method_prob = args.mix_prob
+    elif args.fmix_prob is not None:
+        method_prob = args.fmix_prob
+    else:
+        method_prob = method_section.get("prob", raw_config.get("mix_prob", raw_config.get("fmix_prob", 1.0)))
 
     config = {
         "dataset": dataset_name,
         "recipe": recipe_name,
         "model": raw_config.get("model", "preact_resnet18"),
-        "method": raw_config.get("method", "fmix"),
+        "method": method_name,
         "data_dir": args.data_dir or raw_config.get("data_dir", "./data"),
         "output_dir": args.output_dir or raw_config.get("output_dir", "./runs/fmix"),
+        "checkpoint": args.checkpoint or raw_config.get("checkpoint"),
         "download": bool(args.download if args.download is not None else raw_config.get("download", False)),
-        "augment": augment,
-        "num_classes": dataset.num_classes,
+        "use_basic_augmentation": use_basic_augmentation,
+        "num_classes": int(raw_config.get("num_classes", dataset.num_classes)),
         "image_size": dataset.image_size,
         "mean": dataset.mean,
         "std": dataset.std,
@@ -147,12 +162,13 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         "weight_decay": _choose(args, raw_config, "weight_decay", "training", "weight_decay", recipe.weight_decay),
         "scheduler": _choose(args, raw_config, "scheduler", "training", "scheduler", recipe.scheduler),
         "milestones": _choose(args, raw_config, "milestones", "training", "milestones", list(recipe.milestones)),
-        "alpha": _choose(args, raw_config, "alpha", "fmix", "alpha", recipe.alpha),
+        "alpha": args.alpha if args.alpha is not None else method_section.get("alpha", fmix_section.get("alpha", recipe.alpha)),
         "decay_power": _choose(args, raw_config, "decay_power", "fmix", "decay_power", recipe.decay_power),
         "max_soft": _choose(args, raw_config, "max_soft", "fmix", "max_soft", recipe.max_soft),
         "transform_profile": recipe.transform_profile,
         "reformulate": _choose(args, raw_config, "reformulate", "fmix", "reformulate", False),
-        "fmix_prob": _choose(args, raw_config, "fmix_prob", "fmix", "prob", 1.0),
+        "method_prob": method_prob,
+        "fmix_prob": method_prob,
     }
     return config
 
@@ -185,6 +201,22 @@ def topk_correct_tensor(logits: torch.Tensor, targets: torch.Tensor, k: int = 1)
     pred = pred.t()
     correct = pred.eq(targets.reshape(1, -1).expand_as(pred))
     return correct[:k].reshape(-1).float().sum()
+
+
+def reduce_logits_for_dataset(logits: torch.Tensor, dataset: str) -> torch.Tensor:
+    if dataset != "imagenet_a":
+        return logits
+
+    if logits.size(1) == IMAGENET_A_NUM_CLASSES:
+        return logits
+    if logits.size(1) != 1000:
+        raise ValueError(
+            "ImageNet-A evaluation expects either 1000 ImageNet logits or "
+            f"{IMAGENET_A_NUM_CLASSES} already-reduced logits; got {logits.size(1)}."
+        )
+
+    indices = torch.tensor(IMAGENET_A_INDICES_IN_1K, device=logits.device)
+    return logits.index_select(1, indices)
 
 
 def reduce_metrics(metrics: tuple[float, int, int], name: str, use_xla: bool, xm: Any | None):
@@ -276,17 +308,91 @@ def save_checkpoint(
         torch.save(payload, path)
 
 
+def load_model_checkpoint(path: str | Path, model: torch.nn.Module) -> dict[str, Any]:
+    checkpoint = torch.load(path, map_location="cpu")
+    if isinstance(checkpoint, dict):
+        state_dict = (
+            checkpoint.get("model")
+            or checkpoint.get("model_state_dict")
+            or checkpoint.get("state_dict")
+            or checkpoint
+        )
+    else:
+        state_dict = checkpoint
+
+    if not isinstance(state_dict, dict):
+        raise RuntimeError(f"Checkpoint {path} does not contain a model state dict.")
+
+    state_dict = prepare_state_dict_for_model(state_dict, model)
+
+    model.load_state_dict(state_dict)
+    return checkpoint if isinstance(checkpoint, dict) else {}
+
+
+def prepare_state_dict_for_model(state_dict: dict[str, Any], model: torch.nn.Module) -> dict[str, Any]:
+    if state_dict and all(str(key).startswith("module.") for key in state_dict):
+        state_dict = {str(key)[7:]: value for key, value in state_dict.items()}
+
+    model_keys = set(model.state_dict())
+    if model_keys.intersection(state_dict):
+        return state_dict
+
+    if "fc.weight" not in state_dict and "fc.bias" not in state_dict:
+        return state_dict
+
+    mapped = {}
+    for key, value in state_dict.items():
+        key = str(key)
+        if key.startswith("fc."):
+            mapped[f"head.{key}"] = value
+        else:
+            mapped[f"backbone.{key}"] = value
+    return mapped if model_keys.intersection(mapped) else state_dict
+
+
 def make_scheduler(optimizer: optim.Optimizer, config: dict[str, Any]):
     if config["scheduler"] == "cosine":
         return optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(config["epochs"]), eta_min=0.0)
     return optim.lr_scheduler.MultiStepLR(optimizer, milestones=list(config["milestones"]), gamma=0.1)
 
 
+def build_batch_mixer(config: dict[str, Any]):
+    method = str(config["method"]).lower()
+    if method == "fmix":
+        return FMix(
+            decay_power=float(config["decay_power"]),
+            alpha=float(config["alpha"]),
+            size=(int(config["image_size"]), int(config["image_size"])),
+            max_soft=float(config["max_soft"]),
+            reformulate=bool(config["reformulate"]),
+        )
+    if method == "mixup":
+        return MixUp(alpha=float(config["alpha"]))
+    if method in {"none", "eval"}:
+        return None
+    raise ValueError(f"Unsupported method: {config['method']}")
+
+
+def mixed_sample_cross_entropy(logits: torch.Tensor, mixed, config: dict[str, Any]) -> torch.Tensor:
+    method = str(config["method"]).lower()
+    if method == "fmix":
+        return fmix_cross_entropy(
+            logits,
+            mixed.targets_a,
+            mixed.targets_b,
+            mixed.lam,
+            reformulate=bool(config["reformulate"]),
+        )
+    if method == "mixup":
+        return mixup_cross_entropy(logits, mixed.targets_a, mixed.targets_b, mixed.lam)
+    raise ValueError(f"Unsupported mixed-sample method: {config['method']}")
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader,
     optimizer: optim.Optimizer,
-    mixer: FMix,
+    mixer,
     device: torch.device,
     epoch: int,
     config: dict[str, Any],
@@ -313,16 +419,10 @@ def train_one_epoch(
             targets = targets.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        if config["fmix_prob"] > 0 and random.random() < config["fmix_prob"]:
+        if mixer is not None and config["method_prob"] > 0 and random.random() < config["method_prob"]:
             mixed = mixer(images, targets)
             logits = model(mixed.images)
-            loss = fmix_cross_entropy(
-                logits,
-                mixed.targets_a,
-                mixed.targets_b,
-                mixed.lam,
-                reformulate=bool(config["reformulate"]),
-            )
+            loss = mixed_sample_cross_entropy(logits, mixed, config)
         else:
             logits = model(images)
             loss = F.cross_entropy(logits, targets)
@@ -378,6 +478,7 @@ def evaluate(
     loader,
     device: torch.device,
     epoch: int,
+    config: dict[str, Any],
     args: argparse.Namespace,
     use_xla: bool,
     xm: Any | None,
@@ -399,7 +500,7 @@ def evaluate(
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
-        logits = model(images)
+        logits = reduce_logits_for_dataset(model(images), str(config["dataset"]))
         loss = F.cross_entropy(logits, targets)
         batch_size = int(images.size(0))
         if use_xla:
@@ -458,23 +559,29 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         recipe.transform_profile,
         data_dir=config["data_dir"],
         download=bool(config["download"]),
-        augment=bool(config["augment"]),
+        use_basic_augmentation=bool(config["use_basic_augmentation"]),
     )
 
     distributed = world_size > 1
-    train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True) if distributed else None
+    train_sampler = (
+        DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True)
+        if train_set is not None and distributed
+        else None
+    )
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False) if distributed else None
 
-    train_loader = DataLoader(
-        train_set,
-        batch_size=int(config["batch_size"]),
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        persistent_workers=args.num_workers > 0,
-        drop_last=True,
-    )
+    train_loader = None
+    if train_set is not None:
+        train_loader = DataLoader(
+            train_set,
+            batch_size=int(config["batch_size"]),
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=args.num_workers > 0,
+            drop_last=True,
+        )
     val_loader = DataLoader(
         val_set,
         batch_size=int(config["batch_size"]),
@@ -486,24 +593,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
     )
 
     if use_xla:
-        train_loader = pl.MpDeviceLoader(train_loader, device)
+        if train_loader is not None:
+            train_loader = pl.MpDeviceLoader(train_loader, device)
         val_loader = pl.MpDeviceLoader(val_loader, device)
 
-    model = build_model(str(config["model"]), num_classes=int(config["num_classes"])).to(device)
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=float(config["lr"]),
-        momentum=float(config["momentum"]),
-        weight_decay=float(config["weight_decay"]),
-    )
-    scheduler = make_scheduler(optimizer, config)
-    mixer = FMix(
-        decay_power=float(config["decay_power"]),
-        alpha=float(config["alpha"]),
-        size=(int(config["image_size"]), int(config["image_size"])),
-        max_soft=float(config["max_soft"]),
-        reformulate=bool(config["reformulate"]),
-    )
+    model = build_model(str(config["model"]), num_classes=int(config["num_classes"]))
+    if config["checkpoint"]:
+        checkpoint_meta = load_model_checkpoint(str(config["checkpoint"]), model)
+        loaded_epoch = checkpoint_meta.get("epoch")
+        suffix = f" at epoch {loaded_epoch}" if loaded_epoch is not None else ""
+        print_master(f"Loaded checkpoint {config['checkpoint']}{suffix}", use_xla, xm)
+    model = model.to(device)
 
     run_dir = Path(config["output_dir"]) / config["dataset"] / config["recipe"]
     if is_master(use_xla, xm):
@@ -519,11 +619,31 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             )
         )
     print_master(
-        f"Starting FMix {config['dataset']}/{config['recipe']} on {device}; "
+        f"Starting {str(config['method']).upper()} {config['dataset']}/{config['recipe']} on {device}; "
         f"world_size={world_size}; config={json.dumps(config, sort_keys=True)}",
         use_xla,
         xm,
     )
+
+    if train_loader is None or int(config["epochs"]) <= 0:
+        if train_loader is None and not config["checkpoint"]:
+            print_master(
+                "No train split is available and no checkpoint was provided; evaluating randomly initialized weights.",
+                use_xla,
+                xm,
+            )
+        val_loss, val_acc = evaluate(model, val_loader, device, 0, config, args, use_xla, xm)
+        print_master(f"eval_loss={val_loss:.4f} eval_top1={val_acc:.2f}", use_xla, xm)
+        return
+
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=float(config["lr"]),
+        momentum=float(config["momentum"]),
+        weight_decay=float(config["weight_decay"]),
+    )
+    scheduler = make_scheduler(optimizer, config)
+    mixer = build_batch_mixer(config)
 
     best_acc = 0.0
     for epoch in range(1, int(config["epochs"]) + 1):
@@ -533,7 +653,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         train_loss, train_acc = train_one_epoch(
             model, train_loader, optimizer, mixer, device, epoch, config, args, use_xla, xm
         )
-        val_loss, val_acc = evaluate(model, val_loader, device, epoch, args, use_xla, xm)
+        val_loss, val_acc = evaluate(model, val_loader, device, epoch, config, args, use_xla, xm)
         scheduler.step()
 
         if val_acc > best_acc:

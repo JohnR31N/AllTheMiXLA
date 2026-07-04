@@ -6,7 +6,7 @@ from torch import nn
 
 from allthemix.networks.classifiers import ImageClassifier
 from allthemix.networks.heads import LinearHead
-from allthemix.networks.nn import preact_resnet18_nn
+from allthemix.networks.backbones import preact_resnet18_backbone, torch_resnet101_backbone
 
 
 def normalize_model_name(name: str) -> str:
@@ -17,8 +17,13 @@ def build_model(name: str, num_classes: int, in_channels: int = 3) -> nn.Module:
     model_name = normalize_model_name(name)
 
     if model_name == "preact_resnet18":
-        nn_module = preact_resnet18_nn(in_channels=in_channels)
-        head = LinearHead(in_features=nn_module.output_dim, num_classes=num_classes)
-        return ImageClassifier(nn_module=nn_module, head=head)
+        backbone = preact_resnet18_backbone(in_channels=in_channels)
+        head = LinearHead(in_features=backbone.output_dim, num_classes=num_classes)
+        return ImageClassifier(backbone=backbone, head=head)
+
+    if model_name in {"resnet101", "torch_resnet101", "torchvision_resnet101"}:
+        backbone = torch_resnet101_backbone(in_channels=in_channels)
+        head = LinearHead(in_features=backbone.output_dim, num_classes=num_classes)
+        return ImageClassifier(backbone=backbone, head=head)
 
     raise ValueError(f"Unsupported model: {name}")

@@ -1,0 +1,25 @@
+dataset: imagenet_a
+recipe: official
+model: torch_resnet101
+method: eval
+data_dir: ./data/imagenet-a
+output_dir: ./runs/fmix
+checkpoint: null
+download: false
+use_basic_augmentation: false
+
+training:
+  epochs: 0
+  batch_size: 100
+  lr: 0.0
+  momentum: 0.9
+  weight_decay: 0.0
+  scheduler: cosine
+  milestones: []
+
+fmix:
+  alpha: 1.0
+  decay_power: 3.0
+  max_soft: 0.0
+  reformulate: false
+  prob: 0.0

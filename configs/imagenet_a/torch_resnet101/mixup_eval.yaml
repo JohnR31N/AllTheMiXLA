@@ -1,0 +1,22 @@
+dataset: imagenet_a
+recipe: official
+model: torch_resnet101
+method: mixup
+data_dir: ./data/imagenet-a
+output_dir: ./runs/mixup
+checkpoint: null
+download: false
+use_basic_augmentation: false
+
+training:
+  epochs: 0
+  batch_size: 100
+  lr: 0.0
+  momentum: 0.9
+  weight_decay: 0.0
+  scheduler: cosine
+  milestones: []
+
+mixup:
+  alpha: 1.0
+  prob: 0.0

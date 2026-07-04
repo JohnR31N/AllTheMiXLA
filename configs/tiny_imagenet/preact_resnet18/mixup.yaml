@@ -1,9 +1,9 @@
 dataset: tinyimagenet
 recipe: openmixup
 model: preact_resnet18
-method: fmix
+method: mixup
 data_dir: ./data
-output_dir: ./runs/fmix
+output_dir: ./runs/mixup
 download: false
 use_basic_augmentation: true
 
@@ -16,9 +16,6 @@ training:
   scheduler: cosine
   milestones: []
 
-fmix:
+mixup:
   alpha: 1.0
-  decay_power: 3.0
-  max_soft: 0.0
-  reformulate: false
   prob: 1.0

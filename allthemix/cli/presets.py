@@ -51,6 +51,13 @@ DATASETS: dict[str, DatasetPreset] = {
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
     ),
+    "imagenet_a": DatasetPreset(
+        name="imagenet_a",
+        num_classes=1000,
+        image_size=224,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    ),
 }
 
 
@@ -94,6 +101,19 @@ OPENMIXUP_RECIPES: dict[str, RecipePreset] = {
         max_soft=0.0,
         transform_profile="openmixup",
     ),
+    "imagenet_a": RecipePreset(
+        epochs=0,
+        batch_size=100,
+        lr=0.0,
+        momentum=0.9,
+        weight_decay=0.0,
+        scheduler="cosine",
+        milestones=(),
+        alpha=1.0,
+        decay_power=3.0,
+        max_soft=0.0,
+        transform_profile="imagenet_a",
+    ),
 }
 
 
@@ -136,6 +156,19 @@ OFFICIAL_RECIPES: dict[str, RecipePreset] = {
         decay_power=3.0,
         max_soft=0.0,
         transform_profile="official",
+    ),
+    "imagenet_a": RecipePreset(
+        epochs=0,
+        batch_size=100,
+        lr=0.0,
+        momentum=0.9,
+        weight_decay=0.0,
+        scheduler="cosine",
+        milestones=(),
+        alpha=1.0,
+        decay_power=3.0,
+        max_soft=0.0,
+        transform_profile="imagenet_a",
     ),
 }
 

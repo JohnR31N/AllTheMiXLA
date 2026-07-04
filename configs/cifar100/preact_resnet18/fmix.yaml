@@ -5,7 +5,7 @@ method: fmix
 data_dir: ./data
 output_dir: ./runs/fmix
 download: false
-augment: true
+use_basic_augmentation: true
 
 training:
   epochs: 400

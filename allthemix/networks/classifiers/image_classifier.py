@@ -9,13 +9,13 @@ from torch import nn
 class ImageClassifier(nn.Module):
     """Compose a feature network and a classifier head."""
 
-    def __init__(self, nn_module: nn.Module, head: nn.Module) -> None:
+    def __init__(self, backbone: nn.Module, head: nn.Module) -> None:
         super().__init__()
-        self.nn = nn_module
+        self.backbone = backbone
         self.head = head
 
     def forward(self, x: torch.Tensor, return_features: bool = False):
-        features = self.nn(x)
+        features = self.backbone(x)
         logits = self.head(features)
         if return_features:
             return logits, features

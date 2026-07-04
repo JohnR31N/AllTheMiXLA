@@ -4,41 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from torchvision import datasets, transforms
-from torchvision.transforms import InterpolationMode
+from torchvision import datasets
 
 from allthemix.cli.presets import DatasetPreset
 from allthemix.data.datasets import TinyImageNet
-
-
-def _normalize(preset: DatasetPreset) -> transforms.Normalize:
-    return transforms.Normalize(preset.mean, preset.std)
-
-
-def build_transforms(preset: DatasetPreset, recipe_profile: str, augment: bool = True):
-    normalize = _normalize(preset)
-    base = [transforms.ToTensor(), normalize]
-
-    if preset.name in {"cifar10", "cifar100"}:
-        padding_mode = "reflect" if preset.name == "cifar100" and recipe_profile == "openmixup" else "constant"
-        train_aug = [
-            transforms.RandomCrop(32, padding=4, padding_mode=padding_mode),
-            transforms.RandomHorizontalFlip(),
-        ]
-    elif preset.name == "tinyimagenet":
-        if recipe_profile == "openmixup":
-            train_aug = [
-                transforms.RandomResizedCrop(64, interpolation=InterpolationMode.BICUBIC),
-                transforms.RandomHorizontalFlip(),
-            ]
-        else:
-            train_aug = [transforms.RandomHorizontalFlip()]
-    else:
-        raise ValueError(f"Unsupported dataset: {preset.name}")
-
-    train_transform = transforms.Compose((train_aug if augment else []) + base)
-    val_transform = transforms.Compose(base)
-    return train_transform, val_transform
+from allthemix.data.preprocessors import build_preprocess_pair
 
 
 def _cifar_root(data_dir: str | Path, dataset: str) -> Path:
@@ -59,14 +29,43 @@ def _tiny_root(data_dir: str | Path) -> Path:
     return root / "tiny-imagenet-200"
 
 
+def _has_wnid_class_dirs(path: Path) -> bool:
+    if not path.exists():
+        return False
+    return any(child.is_dir() and child.name.startswith("n") and child.name[1:].isdigit() for child in path.iterdir())
+
+
+def _imagenet_a_root(data_dir: str | Path) -> Path:
+    root = Path(data_dir)
+    named_candidates = [
+        root / "imagenet-a",
+        root / "imagenet_a",
+        root / "ImageNet-A",
+    ]
+    for candidate in named_candidates:
+        for nested in (candidate / "val", candidate):
+            if _has_wnid_class_dirs(nested):
+                return nested
+
+    for candidate in (root, root / "val"):
+        if _has_wnid_class_dirs(candidate):
+            return candidate
+
+    return root / "imagenet-a"
+
+
 def build_datasets(
     preset: DatasetPreset,
     recipe_profile: str,
     data_dir: str | Path,
     download: bool = False,
-    augment: bool = True,
+    use_basic_augmentation: bool = True,
 ):
-    train_transform, val_transform = build_transforms(preset, recipe_profile, augment)
+    train_transform, val_transform = build_preprocess_pair(
+        preset,
+        recipe_profile,
+        use_basic_augmentation,
+    )
 
     if preset.name == "cifar10":
         root = _cifar_root(data_dir, "cifar10")
@@ -101,5 +100,15 @@ def build_datasets(
             f"Tiny-ImageNet not found at {root}. Expected original layout "
             "with wnids.txt/val_annotations.txt or ImageFolder train/val directories."
         )
+
+    if preset.name == "imagenet_a":
+        root = _imagenet_a_root(data_dir)
+        if not _has_wnid_class_dirs(root):
+            raise FileNotFoundError(
+                f"ImageNet-A not found at {root}. Expected ImageFolder class directories "
+                "such as imagenet-a/n01498041/*.jpg."
+            )
+        val_set = datasets.ImageFolder(str(root), transform=val_transform)
+        return None, val_set
 
     raise ValueError(f"Unsupported dataset: {preset.name}")
