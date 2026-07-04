@@ -43,19 +43,31 @@ def _optional_xla_import() -> dict[str, Any] | None:
     try:
         import torch_xla.core.xla_model as xm
         import torch_xla.distributed.parallel_loader as pl
-        import torch_xla.distributed.xla_multiprocessing as xmp
         import torch_xla.runtime as xr
     except ModuleNotFoundError:
         return None
-    return {"xm": xm, "pl": pl, "xmp": xmp, "xr": xr}
+    return {"xm": xm, "pl": pl, "xr": xr}
 
 
-def _optional_xla_spawn_import():
+def _optional_xla_launcher():
+    try:
+        import torch_xla
+    except ModuleNotFoundError:
+        return None
+    if hasattr(torch_xla, "launch"):
+        return torch_xla.launch
+
     try:
         import torch_xla.distributed.xla_multiprocessing as xmp
     except ModuleNotFoundError:
         return None
-    return xmp
+
+    def _spawn(fn, args=(), start_method="spawn", debug_single_process=False):
+        if debug_single_process:
+            return fn(0, *args)
+        return xmp.spawn(fn, args=args, nprocs=None, start_method=start_method)
+
+    return _spawn
 
 
 def parse_args() -> argparse.Namespace:
@@ -857,10 +869,10 @@ def main() -> None:
         os.environ.setdefault("TPU_NUM_DEVICES", str(args.num_cores))
     should_spawn = args.device == "xla" and args.num_cores > 1
     if should_spawn:
-        xmp = _optional_xla_spawn_import()
-        if xmp is None:
+        launcher = _optional_xla_launcher()
+        if launcher is None:
             raise RuntimeError("PyTorch/XLA is not installed. Cannot spawn XLA workers.")
-        xmp.spawn(run_worker, args=(args,), nprocs=None, start_method="spawn")
+        launcher(run_worker, args=(args,), start_method="spawn")
     else:
         run_worker(0, args)
 
