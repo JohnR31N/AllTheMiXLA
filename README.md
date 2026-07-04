@@ -93,6 +93,9 @@ source .venvxla/bin/activate
 export PJRT_DEVICE=TPU
 ```
 
+The setup script pins matching PyTorch/XLA wheels by default:
+`torch==2.9.0`, `torchvision==0.24.0`, and `torch_xla[tpu]==2.9.0`.
+
 If `.venvxla` already exists from another Python version, rebuild it:
 
 ```bash

@@ -5,6 +5,18 @@ VENV_DIR="${VENV_DIR:-.venvxla}"
 PYTHON_BIN="${PYTHON_BIN:-python3.10}"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-1}"
 RECREATE_VENV="${RECREATE_VENV:-0}"
+PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
+PIP_TMPDIR="${PIP_TMPDIR:-/dev/shm/allthemixla-pip-tmp}"
+TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.24.0}"
+TORCH_XLA_VERSION="${TORCH_XLA_VERSION:-$TORCH_VERSION}"
+
+export PIP_NO_CACHE_DIR
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+if [[ -d /dev/shm ]]; then
+  mkdir -p "$PIP_TMPDIR"
+  export TMPDIR="$PIP_TMPDIR"
+fi
 
 if [[ "$INSTALL_SYSTEM_DEPS" == "1" ]] && command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update
@@ -48,10 +60,16 @@ if [[ "$VENV_PYTHON_VERSION" != "3.10" ]]; then
   exit 1
 fi
 
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install numpy pyyaml pillow tqdm
-python -m pip install torch torchvision 'torch_xla[tpu]' \
+python -m pip cache purge >/dev/null 2>&1 || true
+python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+python -m pip install --no-cache-dir numpy pyyaml pillow tqdm
+python -m pip uninstall -y torch torchvision torch_xla libtpu >/dev/null 2>&1 || true
+python -m pip install --no-cache-dir \
+  "torch==$TORCH_VERSION" \
+  "torchvision==$TORCHVISION_VERSION" \
+  "torch_xla[tpu]==$TORCH_XLA_VERSION" \
   -f https://storage.googleapis.com/libtpu-releases/index.html
+python -m pip check
 
 python - <<'PY'
 import torch
