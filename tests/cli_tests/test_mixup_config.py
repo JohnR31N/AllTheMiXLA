@@ -1,7 +1,7 @@
 import argparse
 import unittest
 
-from allthemix.cli.train import load_config, resolved_config
+from allthemix.cli.train import load_config, resolved_config, should_apply_method
 
 
 def _args(**overrides):
@@ -32,6 +32,7 @@ def _args(**overrides):
         "saliency_dir": None,
         "saliency_path": None,
         "checkpoint": None,
+        "seed": 0,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -158,6 +159,15 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertEqual(config["batch_size"], 32)
         self.assertEqual(config["method_prob"], 0.5)
         self.assertEqual(config["saliency_source"], "gradient")
+
+    def test_xla_method_probability_decision_is_rank_independent(self):
+        config = {"method_prob": 0.5}
+        args = _args(seed=123)
+
+        decision_a = should_apply_method(config, args, epoch=3, step=17, use_xla=True, world_size=4)
+        decision_b = should_apply_method(config, args, epoch=3, step=17, use_xla=True, world_size=4)
+
+        self.assertEqual(decision_a, decision_b)
 
 
 if __name__ == "__main__":

@@ -828,6 +828,26 @@ def call_batch_mixer(
     return mixer(images, targets)
 
 
+def should_apply_method(
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    epoch: int,
+    step: int,
+    use_xla: bool,
+    world_size: int,
+) -> bool:
+    prob = float(config["method_prob"])
+    if prob <= 0.0:
+        return False
+    if prob >= 1.0:
+        return True
+    if use_xla and world_size > 1:
+        seed = int(args.seed or 0)
+        rng = random.Random((seed + 1) * 1_000_003 + int(epoch) * 10_007 + int(step))
+        return rng.random() < prob
+    return random.random() < prob
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader,
@@ -863,7 +883,7 @@ def train_one_epoch(
             aux_info = {key: value.to(device, non_blocking=True) for key, value in aux_info.items()}
 
         optimizer.zero_grad(set_to_none=True)
-        if mixer is not None and config["method_prob"] > 0 and random.random() < config["method_prob"]:
+        if mixer is not None and should_apply_method(config, args, epoch, step, use_xla, world_size):
             mixed = call_batch_mixer(mixer, images, targets, aux_info, config, use_xla, xm, rank, world_size)
             logits = model(mixed.images)
             loss = mixed_sample_cross_entropy(logits, mixed, config)
