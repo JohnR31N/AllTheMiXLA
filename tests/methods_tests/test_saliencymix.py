@@ -2,7 +2,12 @@ import unittest
 
 import torch
 
-from allthemix.methods.saliencymix import SaliencyMix, build_saliency_box_mask, saliencymix
+from allthemix.methods.saliencymix import (
+    SaliencyMix,
+    build_saliency_box_mask,
+    compute_gradient_saliency_maps,
+    saliencymix,
+)
 
 
 class SaliencyMixTests(unittest.TestCase):
@@ -56,6 +61,18 @@ class SaliencyMixTests(unittest.TestCase):
 
         self.assertEqual(result.images.shape, images.shape)
         self.assertEqual(tuple(result.saliency_maps.shape), (2, 1, 8, 8))
+
+    def test_saliencymix_gradient_fallback_runs_without_fft(self):
+        images = torch.rand(2, 3, 8, 8)
+        targets = torch.arange(2, dtype=torch.long)
+
+        saliency_maps = compute_gradient_saliency_maps(images)
+        result = SaliencyMix(alpha=1.0, saliency_source="gradient")(images, targets)
+
+        self.assertEqual(tuple(saliency_maps.shape), (2, 1, 8, 8))
+        self.assertEqual(result.images.shape, images.shape)
+        self.assertGreaterEqual(float(saliency_maps.min()), 0.0)
+        self.assertLessEqual(float(saliency_maps.max()), 1.0)
 
     def test_saliencymix_prob_zero_returns_clean_batch(self):
         images = torch.rand(2, 3, 8, 8)

@@ -25,7 +25,7 @@ from torch.utils.data.distributed import DistributedSampler
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from allthemix.data import build_datasets
+from allthemix.data import attach_train_saliency_maps, build_datasets
 from allthemix.data.datasets import IMAGENET_A_INDICES_IN_1K, IMAGENET_A_NUM_CLASSES
 from allthemix.methods import FMix, GuidedSR, MixUp, SaliencyMix
 from allthemix.networks import build_model
@@ -126,7 +126,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mix-prob", type=float, default=None, help="Batch-level mix method probability.")
     parser.add_argument("--guidedmixup-blur-kernel", type=int, default=None)
     parser.add_argument("--guidedmixup-condition", choices=["random", "greedy"], default=None)
-    parser.add_argument("--saliency-source", choices=["batch", "spectral_residual", "guided_sr", "sr", "online"], default=None)
+    parser.add_argument(
+        "--saliency-source",
+        choices=["batch", "gradient", "grad", "spectral_residual", "guided_sr", "sr", "online"],
+        default=None,
+    )
+    parser.add_argument("--saliency-dir", default=None)
+    parser.add_argument("--saliency-path", default=None)
 
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xla"], default="auto")
     parser.add_argument("--num-cores", type=int, default=1, help="XLA processes to spawn when --device xla.")
@@ -318,6 +324,8 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
             or saliencymix_section.get("saliency_source")
             or raw_config.get("saliency_source", "spectral_residual")
         ).lower(),
+        "saliency_dir": getattr(args, "saliency_dir", None) or raw_config.get("saliency_dir", raw_config.get("data_dir", "./data")),
+        "saliency_path": getattr(args, "saliency_path", None) or raw_config.get("saliency_path") or None,
         "cross_device_shuffle": bool(raw_config.get("cross_device_shuffle", False)),
         "validation_split": float(raw_config.get("validation_split", 0.0)),
         "eval_on_test_each_epoch": bool(raw_config.get("eval_on_test_each_epoch", True)),
@@ -1004,6 +1012,13 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
         download=bool(config["download"]),
         use_basic_augmentation=bool(config["use_basic_augmentation"]),
     )
+    if train_set is not None and str(config["method"]) == "saliencymix" and str(config["saliency_source"]) == "batch":
+        train_set = attach_train_saliency_maps(
+            train_set,
+            dataset_name=str(config["dataset"]),
+            saliency_dir=str(config["saliency_dir"]),
+            saliency_path=config["saliency_path"],
+        )
     train_set, val_set, test_set = apply_validation_split(train_set, val_set, preset, recipe, config, args.seed)
     if bool(config["eval_on_test_each_epoch"]) and test_set is not None:
         val_set = test_set

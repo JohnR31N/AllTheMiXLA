@@ -25,7 +25,9 @@ lr_decay_rate: 0.1
 
 saliencymix_alpha: 1.0
 saliencymix_prob: 0.5
-saliency_source: spectral_residual
+# Fast TPU smoke-test source. For official SaliencyMix, generate/load
+# precomputed maps and set saliency_source: batch.
+saliency_source: gradient
 guidedmixup_blur_kernel: 7
 
 basic_aug: false

@@ -29,6 +29,8 @@ def _args(**overrides):
         "guidedmixup_blur_kernel": None,
         "guidedmixup_condition": None,
         "saliency_source": None,
+        "saliency_dir": None,
+        "saliency_path": None,
         "checkpoint": None,
     }
     defaults.update(overrides)
@@ -147,6 +149,15 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertEqual(config["alpha"], 1.0)
         self.assertEqual(config["method_prob"], 0.5)
         self.assertEqual(config["saliency_source"], "batch")
+
+    def test_tiny_saliencymix_xla4_uses_fast_gradient_saliency_source(self):
+        raw_config = load_config("configs/tiny_imagenet/preact_resnet18/saliencymix_xla4.yaml")
+        config = resolved_config(_args(), raw_config)
+
+        self.assertEqual(config["method"], "saliencymix")
+        self.assertEqual(config["batch_size"], 32)
+        self.assertEqual(config["method_prob"], 0.5)
+        self.assertEqual(config["saliency_source"], "gradient")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from allthemix.methods.guided_sr import (
     _validate_targets,
     compute_spectral_residual_saliency_maps,
     ensure_nchw_saliency_maps,
+    rgb_to_grayscale,
 )
 
 
@@ -38,6 +39,23 @@ def sample_lam(alpha: float) -> float:
     if alpha <= 0:
         return 1.0
     return float(np.random.beta(alpha, alpha))
+
+
+def normalize_saliency_map_batch(saliency_maps: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    saliency_maps = saliency_maps.to(dtype=torch.float32)
+    saliency_maps = saliency_maps - saliency_maps.amin(dim=(-2, -1), keepdim=True)
+    scale = saliency_maps.amax(dim=(-2, -1), keepdim=True)
+    return saliency_maps / (scale + eps)
+
+
+def compute_gradient_saliency_maps(images: torch.Tensor) -> torch.Tensor:
+    """Compute a cheap edge-gradient saliency map without FFT."""
+
+    _validate_nchw_images(images, "SaliencyMix")
+    gray = rgb_to_grayscale(images)
+    dx = torch.nn.functional.pad(torch.abs(gray[:, :, :, 1:] - gray[:, :, :, :-1]), (1, 0, 0, 0))
+    dy = torch.nn.functional.pad(torch.abs(gray[:, :, 1:, :] - gray[:, :, :-1, :]), (0, 0, 1, 0))
+    return normalize_saliency_map_batch(dx + dy)
 
 
 def build_saliency_box_mask(
@@ -102,11 +120,13 @@ class SaliencyMix:
     ) -> torch.Tensor:
         if saliency_maps is not None:
             return ensure_nchw_saliency_maps(saliency_maps, images)
+        if self.saliency_source in {"gradient", "grad"}:
+            return compute_gradient_saliency_maps(images)
         if self.saliency_source in {"spectral_residual", "guided_sr", "sr", "online"}:
             return compute_spectral_residual_saliency_maps(images, blur_kernel=self.blur_kernel)
         raise ValueError(
             "SaliencyMix requires saliency maps when saliency_source='batch'. "
-            "Pass batch item (images, labels, saliency_maps) or set saliency_source: spectral_residual."
+            "Pass batch item (images, labels, saliency_maps) or set saliency_source: gradient/spectral_residual."
         )
 
     def __call__(
