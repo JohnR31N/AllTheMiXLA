@@ -329,11 +329,21 @@ CSV_FIELDS = [
     "phase",
     "lr",
     "train_loss",
+    "train_accuracy",
     "train_top1",
+    "train_top1_error",
+    "eval_loss",
+    "eval_top1_accuracy",
+    "eval_top1_error",
     "val_loss",
     "val_top1",
+    "val_top1_error",
+    "best_top1_error",
+    "best_epoch",
     "best_top1",
     "test_loss",
+    "test_top1_accuracy",
+    "test_top1_error",
     "test_top1",
 ]
 
@@ -344,14 +354,82 @@ def metrics_csv_path(run_dir: Path, config: dict[str, Any]) -> Path:
     return run_dir / filename
 
 
+def pct_to_fraction(value: float) -> float:
+    return float(value) / 100.0
+
+
+def pct_to_error(value: float) -> float:
+    return 1.0 - pct_to_fraction(value)
+
+
+def _maybe_float(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_metrics_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = {field: row.get(field, "") for field in CSV_FIELDS}
+
+    def fill_from_percent(percent_field: str, accuracy_field: str, error_field: str) -> None:
+        percent = _maybe_float(row.get(percent_field))
+        if percent is None:
+            return
+        if not normalized.get(accuracy_field):
+            normalized[accuracy_field] = f"{pct_to_fraction(percent):.6f}"
+        if not normalized.get(error_field):
+            normalized[error_field] = f"{pct_to_error(percent):.6f}"
+
+    def fill_error_from_accuracy(accuracy_field: str, error_field: str) -> None:
+        accuracy = _maybe_float(normalized.get(accuracy_field) or row.get(accuracy_field))
+        if accuracy is not None and not normalized.get(error_field):
+            normalized[error_field] = f"{1.0 - accuracy:.6f}"
+
+    fill_from_percent("train_top1", "train_accuracy", "train_top1_error")
+    fill_from_percent("val_top1", "eval_top1_accuracy", "eval_top1_error")
+    fill_from_percent("test_top1", "test_top1_accuracy", "test_top1_error")
+
+    val_top1 = _maybe_float(row.get("val_top1"))
+    if val_top1 is not None and not normalized.get("val_top1_error"):
+        normalized["val_top1_error"] = f"{pct_to_error(val_top1):.6f}"
+
+    best_top1 = _maybe_float(row.get("best_top1"))
+    if best_top1 is not None and not normalized.get("best_top1_error"):
+        normalized["best_top1_error"] = f"{pct_to_error(best_top1):.6f}"
+
+    fill_error_from_accuracy("train_accuracy", "train_top1_error")
+    fill_error_from_accuracy("eval_top1_accuracy", "eval_top1_error")
+    fill_error_from_accuracy("test_top1_accuracy", "test_top1_error")
+
+    return normalized
+
+
+def migrate_metrics_csv(path: Path) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames == CSV_FIELDS:
+            return
+        rows = [normalize_metrics_row(row) for row in reader]
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def append_metrics_csv(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not path.exists()
+    migrate_metrics_csv(path)
+    write_header = not path.exists() or path.stat().st_size == 0
     with path.open("a", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         if write_header:
             writer.writeheader()
-        writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
+        writer.writerow(normalize_metrics_row(row))
 
 
 def topk_correct(logits: torch.Tensor, targets: torch.Tensor, k: int = 1) -> int:
@@ -864,14 +942,21 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
             )
         val_loss, val_acc = evaluate(model, val_loader, device, 0, config, args, use_xla, xm)
         if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            val_error = pct_to_error(val_acc)
             append_metrics_csv(
                 csv_path,
                 {
                     "epoch": 0,
                     "phase": "eval",
+                    "eval_loss": f"{val_loss:.6f}",
+                    "eval_top1_accuracy": f"{pct_to_fraction(val_acc):.6f}",
+                    "eval_top1_error": f"{val_error:.6f}",
                     "val_loss": f"{val_loss:.6f}",
                     "val_top1": f"{val_acc:.6f}",
+                    "val_top1_error": f"{val_error:.6f}",
                     "best_top1": f"{val_acc:.6f}",
+                    "best_top1_error": f"{val_error:.6f}",
+                    "best_epoch": 0,
                 },
             )
         print_master(f"eval_loss={val_loss:.4f} eval_top1={val_acc:.2f}", use_xla, xm, xr)
@@ -887,6 +972,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
     mixer = build_batch_mixer(config)
 
     best_acc = 0.0
+    best_epoch = 0
     for epoch in range(1, int(config["epochs"]) + 1):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
@@ -900,6 +986,7 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
 
         if val_acc > best_acc:
             best_acc = val_acc
+            best_epoch = epoch
             if bool(config["save_checkpoint"]) and is_master(use_xla, xm, xr):
                 save_checkpoint(checkpoint_root / "best.pt", model, optimizer, scheduler, epoch, best_acc, config, use_xla, xm)
         if (
@@ -921,6 +1008,9 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                 xm,
             )
         if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            train_error = pct_to_error(train_acc)
+            val_error = pct_to_error(val_acc)
+            best_error = pct_to_error(best_acc)
             append_metrics_csv(
                 csv_path,
                 {
@@ -928,9 +1018,17 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
                     "phase": "train_val",
                     "lr": f"{epoch_lr:.10g}",
                     "train_loss": f"{train_loss:.6f}",
+                    "train_accuracy": f"{pct_to_fraction(train_acc):.6f}",
                     "train_top1": f"{train_acc:.6f}",
+                    "train_top1_error": f"{train_error:.6f}",
+                    "eval_loss": f"{val_loss:.6f}",
+                    "eval_top1_accuracy": f"{pct_to_fraction(val_acc):.6f}",
+                    "eval_top1_error": f"{val_error:.6f}",
                     "val_loss": f"{val_loss:.6f}",
                     "val_top1": f"{val_acc:.6f}",
+                    "val_top1_error": f"{val_error:.6f}",
+                    "best_top1_error": f"{best_error:.6f}",
+                    "best_epoch": best_epoch,
                     "best_top1": f"{best_acc:.6f}",
                 },
             )
@@ -948,13 +1046,18 @@ def run_worker(index: int, args: argparse.Namespace) -> None:
     if bool(config["final_test"]) and test_loader is not None:
         test_loss, test_acc = evaluate(model, test_loader, device, int(config["epochs"]), config, args, use_xla, xm)
         if bool(config["save_csv"]) and is_master(use_xla, xm, xr):
+            test_error = pct_to_error(test_acc)
             append_metrics_csv(
                 csv_path,
                 {
                     "epoch": int(config["epochs"]),
                     "phase": "final_test",
                     "best_top1": f"{best_acc:.6f}",
+                    "best_top1_error": f"{pct_to_error(best_acc):.6f}",
+                    "best_epoch": best_epoch,
                     "test_loss": f"{test_loss:.6f}",
+                    "test_top1_accuracy": f"{pct_to_fraction(test_acc):.6f}",
+                    "test_top1_error": f"{test_error:.6f}",
                     "test_top1": f"{test_acc:.6f}",
                 },
             )
