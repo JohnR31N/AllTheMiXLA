@@ -68,6 +68,13 @@ def mixup_cross_entropy(
     logits: torch.Tensor,
     targets_a: torch.Tensor,
     targets_b: torch.Tensor,
-    lam: float,
+    lam: float | torch.Tensor,
 ) -> torch.Tensor:
+    if isinstance(lam, torch.Tensor):
+        lam_tensor = lam.to(device=logits.device, dtype=logits.dtype)
+        loss_a = F.cross_entropy(logits, targets_a, reduction="none")
+        loss_b = F.cross_entropy(logits, targets_b, reduction="none")
+        if lam_tensor.dim() == 0:
+            return (loss_a * lam_tensor + loss_b * (1.0 - lam_tensor)).mean()
+        return (loss_a * lam_tensor.reshape(-1) + loss_b * (1.0 - lam_tensor.reshape(-1))).mean()
     return F.cross_entropy(logits, targets_a) * lam + F.cross_entropy(logits, targets_b) * (1.0 - lam)

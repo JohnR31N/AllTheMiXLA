@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from allthemix.cli.train import build_batch_mixer, prepare_state_dict_for_model, reduce_logits_for_dataset
-from allthemix.methods import FMix, MixUp
+from allthemix.methods import FMix, GuidedSR, MixUp, SaliencyMix
 from allthemix.networks import build_model
 
 
@@ -51,9 +51,27 @@ class ImageNetAEvalTests(unittest.TestCase):
             }
         )
         mixup = build_batch_mixer({"method": "mixup", "alpha": 1.0})
+        saliencymix = build_batch_mixer(
+            {
+                "method": "saliencymix",
+                "alpha": 1.0,
+                "saliency_source": "spectral_residual",
+                "guidedmixup_blur_kernel": 7,
+            }
+        )
+        guided_sr = build_batch_mixer(
+            {
+                "method": "guided_sr",
+                "alpha": 1.0,
+                "guidedmixup_blur_kernel": 7,
+                "guidedmixup_condition": "greedy",
+            }
+        )
 
         self.assertIsInstance(fmix, FMix)
         self.assertIsInstance(mixup, MixUp)
+        self.assertIsInstance(saliencymix, SaliencyMix)
+        self.assertIsInstance(guided_sr, GuidedSR)
         self.assertIsNone(build_batch_mixer({"method": "baseline"}))
         self.assertIsNone(build_batch_mixer({"method": "none"}))
 

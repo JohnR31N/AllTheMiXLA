@@ -179,6 +179,14 @@ Run the matching MixUp paper-style Tiny-ImageNet config with the same schedule:
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_mixup_paper_xla4.sh --device xla --num-cores 4
 ```
 
+Run the AllTheMix-style Guided-SR and SaliencyMix Tiny-ImageNet configs on
+4 TPU devices:
+
+```bash
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_guided_sr_xla4.sh --device xla --num-cores 4
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_saliencymix_xla4.sh --device xla --num-cores 4
+```
+
 Evaluate ImageNet-A with a checkpoint:
 
 ```bash

@@ -26,6 +26,9 @@ def _args(**overrides):
         "reformulate": None,
         "fmix_prob": None,
         "mix_prob": None,
+        "guidedmixup_blur_kernel": None,
+        "guidedmixup_condition": None,
+        "saliency_source": None,
         "checkpoint": None,
     }
     defaults.update(overrides)
@@ -108,6 +111,42 @@ class MixUpConfigTests(unittest.TestCase):
         self.assertEqual(config["validation_split"], 0.0)
         self.assertFalse(config["final_test"])
         self.assertTrue(config["cross_device_shuffle"])
+
+    def test_guided_sr_legacy_fields_resolve(self):
+        config = resolved_config(
+            _args(),
+            {
+                "dataset": "tiny_imagenet",
+                "method": "guided_sr",
+                "guidedmixup_alpha": 1.0,
+                "guidedmixup_prob": 0.5,
+                "guidedmixup_blur_kernel": 7,
+                "guidedmixup_condition": "greedy",
+            },
+        )
+
+        self.assertEqual(config["method"], "guided_sr")
+        self.assertEqual(config["alpha"], 1.0)
+        self.assertEqual(config["method_prob"], 0.5)
+        self.assertEqual(config["guidedmixup_blur_kernel"], 7)
+        self.assertEqual(config["guidedmixup_condition"], "greedy")
+
+    def test_saliencymix_legacy_fields_resolve(self):
+        config = resolved_config(
+            _args(),
+            {
+                "dataset": "tiny_imagenet",
+                "method": "saliency_mix",
+                "saliencymix_alpha": 1.0,
+                "saliencymix_prob": 0.5,
+                "saliency_source": "batch",
+            },
+        )
+
+        self.assertEqual(config["method"], "saliencymix")
+        self.assertEqual(config["alpha"], 1.0)
+        self.assertEqual(config["method_prob"], 0.5)
+        self.assertEqual(config["saliency_source"], "batch")
 
 
 if __name__ == "__main__":

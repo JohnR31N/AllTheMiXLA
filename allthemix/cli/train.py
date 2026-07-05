@@ -27,7 +27,7 @@ if __package__ is None or __package__ == "":
 
 from allthemix.data import build_datasets
 from allthemix.data.datasets import IMAGENET_A_INDICES_IN_1K, IMAGENET_A_NUM_CLASSES
-from allthemix.methods import FMix, MixUp
+from allthemix.methods import FMix, GuidedSR, MixUp, SaliencyMix
 from allthemix.networks import build_model
 from allthemix.cli.presets import (
     DATASETS,
@@ -38,6 +38,34 @@ from allthemix.cli.presets import (
     preset_dict,
 )
 from allthemix.training.losses import fmix_cross_entropy, mixup_cross_entropy
+
+
+METHOD_ALIASES = {
+    "guided-sr": "guided_sr",
+    "guidedsr": "guided_sr",
+    "guidedmixup_sr": "guided_sr",
+    "guidedmixup-sr": "guided_sr",
+    "guided_mixup_sr": "guided_sr",
+    "saliency_mix": "saliencymix",
+    "saliency-mix": "saliencymix",
+}
+METHOD_CHOICES = sorted(
+    {
+        "baseline",
+        "eval",
+        "fmix",
+        "guided_sr",
+        "mixup",
+        "none",
+        "saliencymix",
+        *METHOD_ALIASES.keys(),
+    }
+)
+
+
+def normalize_method_name(name: Any) -> str:
+    method = str(name).lower()
+    return METHOD_ALIASES.get(method, method)
 
 
 def _optional_xla_import() -> dict[str, Any] | None:
@@ -72,11 +100,11 @@ def _optional_xla_launcher():
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MixUp/FMIX PyTorch/XLA trainer")
+    parser = argparse.ArgumentParser(description="MixUp/FMIX/SaliencyMix/Guided-SR PyTorch/XLA trainer")
     parser.add_argument("--config", default=None, help="YAML/JSON config path, e.g. configs/cifar10/preact_resnet18/fmix.yaml.")
     parser.add_argument("--dataset", choices=sorted(DATASETS), default=None)
     parser.add_argument("--recipe", choices=sorted(RECIPES), default=None)
-    parser.add_argument("--method", choices=["baseline", "eval", "fmix", "mixup", "none"], default=None)
+    parser.add_argument("--method", choices=METHOD_CHOICES, default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--download", action="store_true", default=None, help="Download CIFAR datasets if needed.")
@@ -96,6 +124,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reformulate", action="store_true", default=None)
     parser.add_argument("--fmix-prob", type=float, default=None)
     parser.add_argument("--mix-prob", type=float, default=None, help="Batch-level mix method probability.")
+    parser.add_argument("--guidedmixup-blur-kernel", type=int, default=None)
+    parser.add_argument("--guidedmixup-condition", choices=["random", "greedy"], default=None)
+    parser.add_argument("--saliency-source", choices=["batch", "spectral_residual", "guided_sr", "sr", "online"], default=None)
 
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xla"], default="auto")
     parser.add_argument("--num-cores", type=int, default=1, help="XLA processes to spawn when --device xla.")
@@ -130,6 +161,14 @@ def load_config(path: str | None) -> dict[str, Any]:
 def _section(config: dict[str, Any], name: str) -> dict[str, Any]:
     value = config.get(name, {})
     return value if isinstance(value, dict) else {}
+
+
+def _first_config_value(raw_config: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+    for key in keys:
+        value = raw_config.get(key)
+        if value is not None:
+            return value
+    return default
 
 
 def _choose(
@@ -170,11 +209,13 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
     raw_config = raw_config or {}
     dataset_name = normalize_dataset_name(args.dataset or raw_config.get("dataset", "cifar10"))
     recipe_name = args.recipe or raw_config.get("recipe", "openmixup")
-    method_name = args.method or raw_config.get("method", "fmix")
+    method_name = normalize_method_name(args.method or raw_config.get("method", "fmix"))
     dataset = get_dataset_preset(dataset_name)
     recipe = get_recipe_preset(dataset_name, recipe_name)
     method_section = _section(raw_config, method_name)
     fmix_section = _section(raw_config, "fmix")
+    guidedmixup_section = _section(raw_config, "guidedmixup") or _section(raw_config, "guided_sr")
+    saliencymix_section = _section(raw_config, "saliencymix")
 
     config_augment = raw_config.get(
         "use_basic_augmentation",
@@ -189,7 +230,37 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
     elif args.fmix_prob is not None:
         method_prob = args.fmix_prob
     else:
-        method_prob = method_section.get("prob", raw_config.get("mix_prob", raw_config.get("fmix_prob", 1.0)))
+        method_prob = method_section.get(
+            "prob",
+            _first_config_value(
+                raw_config,
+                [
+                    f"{method_name}_prob",
+                    "guidedmixup_prob",
+                    "saliencymix_prob",
+                    "mix_prob",
+                    "fmix_prob",
+                ],
+                1.0,
+            ),
+        )
+
+    method_alpha = args.alpha
+    if method_alpha is None:
+        method_alpha = method_section.get(
+            "alpha",
+            _first_config_value(
+                raw_config,
+                [
+                    f"{method_name}_alpha",
+                    "guidedmixup_alpha",
+                    "saliencymix_alpha",
+                    "mixup_alpha",
+                    "fmix_alpha",
+                ],
+                fmix_section.get("alpha", recipe.alpha),
+            ),
+        )
 
     config = {
         "dataset": dataset_name,
@@ -223,13 +294,30 @@ def resolved_config(args: argparse.Namespace, raw_config: dict[str, Any] | None 
         ),
         "lr_decay_rate": float(raw_config.get("lr_decay_rate", 0.1)),
         "min_learning_rate": float(raw_config.get("min_learning_rate", 0.0)),
-        "alpha": args.alpha if args.alpha is not None else method_section.get("alpha", fmix_section.get("alpha", recipe.alpha)),
+        "alpha": method_alpha,
         "decay_power": _choose(args, raw_config, "decay_power", "fmix", "decay_power", recipe.decay_power),
         "max_soft": _choose(args, raw_config, "max_soft", "fmix", "max_soft", recipe.max_soft),
         "transform_profile": recipe.transform_profile,
         "reformulate": _choose(args, raw_config, "reformulate", "fmix", "reformulate", False),
         "method_prob": method_prob,
         "fmix_prob": method_prob,
+        "guidedmixup_prob": method_prob,
+        "saliencymix_prob": method_prob,
+        "guidedmixup_blur_kernel": int(
+            getattr(args, "guidedmixup_blur_kernel", None)
+            if getattr(args, "guidedmixup_blur_kernel", None) is not None
+            else guidedmixup_section.get("blur_kernel", raw_config.get("guidedmixup_blur_kernel", 7))
+        ),
+        "guidedmixup_condition": str(
+            getattr(args, "guidedmixup_condition", None)
+            or guidedmixup_section.get("condition")
+            or raw_config.get("guidedmixup_condition", "greedy")
+        ).lower(),
+        "saliency_source": str(
+            getattr(args, "saliency_source", None)
+            or saliencymix_section.get("saliency_source")
+            or raw_config.get("saliency_source", "spectral_residual")
+        ).lower(),
         "cross_device_shuffle": bool(raw_config.get("cross_device_shuffle", False)),
         "validation_split": float(raw_config.get("validation_split", 0.0)),
         "eval_on_test_each_epoch": bool(raw_config.get("eval_on_test_each_epoch", True)),
@@ -608,6 +696,18 @@ def build_batch_mixer(config: dict[str, Any]):
         )
     if method == "mixup":
         return MixUp(alpha=float(config["alpha"]))
+    if method == "saliencymix":
+        return SaliencyMix(
+            alpha=float(config["alpha"]),
+            saliency_source=str(config.get("saliency_source", "spectral_residual")),
+            blur_kernel=int(config.get("guidedmixup_blur_kernel", 7)),
+        )
+    if method == "guided_sr":
+        return GuidedSR(
+            alpha=float(config["alpha"]),
+            blur_kernel=int(config.get("guidedmixup_blur_kernel", 7)),
+            condition=str(config.get("guidedmixup_condition", "greedy")),
+        )
     if method in {"baseline", "none", "eval"}:
         return None
     raise ValueError(f"Unsupported method: {config['method']}")
@@ -625,6 +725,8 @@ def mixed_sample_cross_entropy(logits: torch.Tensor, mixed, config: dict[str, An
         )
     if method == "mixup":
         return mixup_cross_entropy(logits, mixed.targets_a, mixed.targets_b, mixed.lam)
+    if method in {"saliencymix", "guided_sr"}:
+        return mixup_cross_entropy(logits, mixed.targets_a, mixed.targets_b, mixed.lam)
     raise ValueError(f"Unsupported mixed-sample method: {config['method']}")
 
 
@@ -633,10 +735,12 @@ def cross_device_shuffle_batch(
     targets: torch.Tensor,
     rank: int,
     xm: Any,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    aux_tensor: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     local_batch = int(images.size(0))
     global_images = xm.all_gather(images, dim=0)
     global_targets = xm.all_gather(targets, dim=0)
+    global_aux = xm.all_gather(aux_tensor, dim=0) if aux_tensor is not None else None
 
     local_scores = torch.rand(local_batch, device=images.device)
     global_scores = xm.all_gather(local_scores, dim=0)
@@ -646,7 +750,74 @@ def cross_device_shuffle_batch(
     partner_index = global_index.narrow(0, start, local_batch)
     partner_images = global_images.index_select(0, partner_index)
     partner_targets = global_targets.index_select(0, partner_index)
+    if global_aux is not None:
+        partner_aux = global_aux.index_select(0, partner_index)
+        return partner_images, partner_targets, partner_index, partner_aux
     return partner_images, partner_targets, partner_index
+
+
+def unpack_train_batch(batch) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+    if not isinstance(batch, (tuple, list)):
+        raise ValueError("train batch must be (images, targets) or (images, targets, saliency_maps).")
+    if len(batch) == 2:
+        images, targets = batch
+        return images, targets, {}
+    if len(batch) >= 3:
+        images, targets, saliency_maps = batch[:3]
+        return images, targets, {"saliency_maps": saliency_maps}
+    raise ValueError("train batch must be (images, targets) or (images, targets, saliency_maps).")
+
+
+def call_batch_mixer(
+    mixer,
+    images: torch.Tensor,
+    targets: torch.Tensor,
+    aux_info: dict[str, torch.Tensor],
+    config: dict[str, Any],
+    use_xla: bool,
+    xm: Any | None,
+    rank: int,
+    world_size: int,
+):
+    method = str(config["method"]).lower()
+    saliency_maps = aux_info.get("saliency_maps")
+
+    if method == "saliencymix":
+        if use_xla and bool(config["cross_device_shuffle"]) and world_size > 1:
+            if saliency_maps is not None:
+                partner_images, partner_targets, partner_index, partner_saliency_maps = cross_device_shuffle_batch(
+                    images,
+                    targets,
+                    rank,
+                    xm,
+                    aux_tensor=saliency_maps,
+                )
+                return mixer(
+                    images,
+                    targets,
+                    saliency_maps=saliency_maps,
+                    partner_images=partner_images,
+                    partner_targets=partner_targets,
+                    partner_saliency_maps=partner_saliency_maps,
+                    index=partner_index,
+                )
+            partner_images, partner_targets, partner_index = cross_device_shuffle_batch(images, targets, rank, xm)
+            return mixer(
+                images,
+                targets,
+                partner_images=partner_images,
+                partner_targets=partner_targets,
+                index=partner_index,
+            )
+        return mixer(images, targets, saliency_maps=saliency_maps)
+
+    if method == "guided_sr":
+        return mixer(images, targets, saliency_maps=saliency_maps)
+
+    if use_xla and bool(config["cross_device_shuffle"]) and world_size > 1:
+        partner_images, partner_targets, partner_index = cross_device_shuffle_batch(images, targets, rank, xm)
+        return mixer(images, targets, partner_images, partner_targets, partner_index)
+    return mixer(images, targets)
 
 
 def train_one_epoch(
@@ -674,20 +845,18 @@ def train_one_epoch(
         total = 0
     start = time.time()
 
-    for step, (images, targets) in enumerate(loader, start=1):
+    for step, batch in enumerate(loader, start=1):
         if args.max_train_steps is not None and step > args.max_train_steps:
             break
+        images, targets, aux_info = unpack_train_batch(batch)
         if not use_xla:
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
+            aux_info = {key: value.to(device, non_blocking=True) for key, value in aux_info.items()}
 
         optimizer.zero_grad(set_to_none=True)
         if mixer is not None and config["method_prob"] > 0 and random.random() < config["method_prob"]:
-            if use_xla and bool(config["cross_device_shuffle"]) and world_size > 1:
-                partner_images, partner_targets, partner_index = cross_device_shuffle_batch(images, targets, rank, xm)
-                mixed = mixer(images, targets, partner_images, partner_targets, partner_index)
-            else:
-                mixed = mixer(images, targets)
+            mixed = call_batch_mixer(mixer, images, targets, aux_info, config, use_xla, xm, rank, world_size)
             logits = model(mixed.images)
             loss = mixed_sample_cross_entropy(logits, mixed, config)
         else:
