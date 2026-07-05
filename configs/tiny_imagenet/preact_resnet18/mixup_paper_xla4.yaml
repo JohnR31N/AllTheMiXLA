@@ -1,0 +1,45 @@
+dataset: tiny_imagenet
+data_dir: ./data
+model: preact_resnet18
+method: mixup
+cross_device_shuffle: true
+
+# XLA batch_size is per device. With 4 TPU devices this matches the
+# official Tiny-ImageNet script's global batch size of 128.
+batch_size: 32
+global_batch_size: 128
+epochs: 200
+max_train_steps: -1
+max_eval_steps: -1
+
+validation_split: 0.0
+eval_on_test_each_epoch: true
+final_test: false
+
+learning_rate: 0.1
+momentum: 0.9
+weight_decay: 0.0001
+lr_schedule: step
+min_learning_rate: 0.0
+lr_decay_epochs: [150, 180]
+lr_decay_rate: 0.1
+
+basic_aug: true
+seed: 0
+
+mixup:
+  alpha: 1.0
+  prob: 1.0
+
+save_csv: true
+output_dir: ./outputs
+output_name: ""
+run_name: tiny_imagenet_preact_resnet18_mixup_paper_xla4
+
+save_checkpoint: true
+checkpoint_dir: ./checkpoints
+save_best_only: true
+resume_checkpoint: ""
+
+distributed: true
+log_time: true

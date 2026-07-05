@@ -173,6 +173,12 @@ batch `32`:
 bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_fmix_paper_xla4.sh --device xla --num-cores 4
 ```
 
+Run the matching MixUp paper-style Tiny-ImageNet config with the same schedule:
+
+```bash
+bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_mixup_paper_xla4.sh --device xla --num-cores 4
+```
+
 Evaluate ImageNet-A with a checkpoint:
 
 ```bash
