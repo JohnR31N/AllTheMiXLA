@@ -69,6 +69,14 @@ DATASET_ALIASES = {
 }
 
 
+DATASET_EXPECTED_SPLIT_COUNTS: dict[str, dict[str, int]] = {
+    "tinyimagenet": {
+        "train": 100000,
+        "val": 10000,
+    },
+}
+
+
 OPENMIXUP_RECIPES: dict[str, RecipePreset] = {
     "cifar10": RecipePreset(
         epochs=400,

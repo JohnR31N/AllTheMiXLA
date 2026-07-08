@@ -1,4 +1,6 @@
 numpy
+opencv-contrib-python-headless
+Pillow
 PyYAML
 torch
 torchvision

@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from allthemix.cli.train import build_batch_mixer, prepare_state_dict_for_model, reduce_logits_for_dataset
-from allthemix.methods import FMix, GuidedSR, MixUp, SaliencyMix
+from allthemix.methods import CatchUpMix, CutMix, FMix, GuidedSR, MixUp, ResizeMix, SaliencyMix
 from allthemix.networks import build_model
 
 
@@ -51,6 +51,17 @@ class ImageNetAEvalTests(unittest.TestCase):
             }
         )
         mixup = build_batch_mixer({"method": "mixup", "alpha": 1.0})
+        cutmix = build_batch_mixer({"method": "cutmix", "alpha": 1.0, "cutmix_no_repeat": True})
+        resizemix = build_batch_mixer({"method": "resizemix", "resizemix_scope_min": 0.1, "resizemix_scope_max": 0.8})
+        catchupmix = build_batch_mixer(
+            {
+                "method": "catchupmix",
+                "alpha": 1.0,
+                "catchupmix_cutmix_alpha": 1.0,
+                "catchupmix_num_layers": 5,
+                "catchupmix_no_repeat": False,
+            }
+        )
         saliencymix = build_batch_mixer(
             {
                 "method": "saliencymix",
@@ -70,6 +81,9 @@ class ImageNetAEvalTests(unittest.TestCase):
 
         self.assertIsInstance(fmix, FMix)
         self.assertIsInstance(mixup, MixUp)
+        self.assertIsInstance(cutmix, CutMix)
+        self.assertIsInstance(resizemix, ResizeMix)
+        self.assertIsInstance(catchupmix, CatchUpMix)
         self.assertIsInstance(saliencymix, SaliencyMix)
         self.assertIsInstance(guided_sr, GuidedSR)
         self.assertIsNone(build_batch_mixer({"method": "baseline"}))

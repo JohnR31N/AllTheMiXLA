@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+
 VENV_DIR="${VENV_DIR:-.venvxla}"
+VENV_NAME="$(basename "$VENV_DIR")"
 PYTHON_BIN="${PYTHON_BIN:-python3.10}"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-1}"
 RECREATE_VENV="${RECREATE_VENV:-0}"
@@ -10,9 +16,11 @@ PIP_TMPDIR="${PIP_TMPDIR:-/dev/shm/allthemixla-pip-tmp}"
 TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.24.0}"
 TORCH_XLA_VERSION="${TORCH_XLA_VERSION:-$TORCH_VERSION}"
+EXPECTED_TPU_DEVICES="${EXPECTED_TPU_DEVICES:-4}"
 
 export PIP_NO_CACHE_DIR
 export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PYTHONNOUSERSITE=1
 if [[ -d /dev/shm ]]; then
   mkdir -p "$PIP_TMPDIR"
   export TMPDIR="$PIP_TMPDIR"
@@ -20,7 +28,7 @@ fi
 
 if [[ "$INSTALL_SYSTEM_DEPS" == "1" ]] && command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update
-  sudo apt-get install -y python3.10 python3.10-venv libopenblas-dev
+  sudo apt-get install -y python3.10 python3.10-venv ca-certificates curl unzip libopenblas-dev
 fi
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -39,7 +47,14 @@ if [[ "$PYTHON_VERSION" != "3.10" ]]; then
 fi
 
 if [[ "$RECREATE_VENV" == "1" && -d "$VENV_DIR" ]]; then
-  rm -rf "$VENV_DIR"
+  VENV_REAL="$(cd "$VENV_DIR" && pwd -P)"
+  REPO_REAL="$(pwd -P)"
+  if [[ "$VENV_REAL" == "$REPO_REAL" || "$VENV_REAL" != "$REPO_REAL"/* ]]; then
+    echo "Refusing to recreate VENV_DIR outside this repo: $VENV_REAL" >&2
+    echo "Use a repo-local VENV_DIR such as .venvxla." >&2
+    exit 1
+  fi
+  rm -rf "$VENV_REAL"
 fi
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -62,7 +77,7 @@ fi
 
 python -m pip cache purge >/dev/null 2>&1 || true
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-python -m pip install --no-cache-dir numpy pyyaml pillow tqdm
+python -m pip install --no-cache-dir numpy opencv-contrib-python-headless pyyaml pillow
 python -m pip uninstall -y torch torchvision torch_xla libtpu >/dev/null 2>&1 || true
 python -m pip install --no-cache-dir \
   "torch==$TORCH_VERSION" \
@@ -71,15 +86,7 @@ python -m pip install --no-cache-dir \
   -f https://storage.googleapis.com/libtpu-releases/index.html
 python -m pip check
 
-python - <<'PY'
-import torch
-import torchvision
-import torch_xla
-
-print(f"torch={torch.__version__}")
-print(f"torchvision={torchvision.__version__}")
-print(f"torch_xla={torch_xla.__version__}")
-PY
+python -m allthemix.cli.verify_xla_env --skip-device-check --require-venv-name "$VENV_NAME"
 
 cat <<EOF
 
@@ -88,10 +95,11 @@ Created XLA virtual environment: $VENV_DIR
 Activate it with:
   source $VENV_DIR/bin/activate
   export PJRT_DEVICE=TPU
+  export PYTHONNOUSERSITE=1
 
 Verify TPU visibility with:
-  PJRT_DEVICE=TPU python -c "import torch_xla.core.xla_model as xm; print(xm.get_xla_supported_devices()); print(xm.xla_real_devices())"
+  PJRT_DEVICE=TPU python -m allthemix.cli.verify_xla_env --require-tpu --expected-tpu-devices "$EXPECTED_TPU_DEVICES" --require-venv-name "$VENV_NAME"
 
-Example smoke run:
-  PJRT_DEVICE=TPU python -m allthemix.cli.train --config configs/cifar10/preact_resnet18/mixup.yaml --download --device xla --num-cores 8 --num-workers 0 --epochs 1 --batch-size 32 --max-train-steps 20 --max-val-steps 5
+After activating the environment, run a smoke check with:
+  PJRT_DEVICE=TPU bash scripts/experiment_run/run_tiny_imagenet_preact_resnet18_baseline_xla4.sh --device xla --num-cores 4 --num-workers 0 --epochs 1 --max-train-steps 20 --max-val-steps 5 --log-interval 0
 EOF

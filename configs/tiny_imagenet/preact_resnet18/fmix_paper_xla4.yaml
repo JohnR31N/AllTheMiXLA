@@ -33,6 +33,7 @@ fmix:
   max_soft: 0.0
   reformulate: false
   prob: 1.0
+  no_repeat: true
 
 save_csv: true
 output_dir: ./outputs

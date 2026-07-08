@@ -9,8 +9,41 @@ from allthemix.networks.heads import LinearHead
 from allthemix.networks.backbones import preact_resnet18_backbone, torch_resnet101_backbone
 
 
+MODEL_IMPL_VERSIONS = {
+    # v2 uses the canonical PreAct ResNet identity shortcut semantics: identity
+    # blocks keep the original input, projection blocks use the preactivated path.
+    "preact_resnet18": 2,
+    "resnet101": 1,
+    "torch_resnet101": 1,
+    "torchvision_resnet101": 1,
+}
+
+MODEL_CANONICAL_NAMES = {
+    "preact_resnet18": "preact_resnet18",
+    "resnet101": "torch_resnet101",
+    "torch_resnet101": "torch_resnet101",
+    "torchvision_resnet101": "torch_resnet101",
+}
+
+
 def normalize_model_name(name: str) -> str:
     return name.lower().replace("-", "_").replace(" ", "_")
+
+
+def canonical_model_name(name: str) -> str:
+    model_name = normalize_model_name(name)
+    try:
+        return MODEL_CANONICAL_NAMES[model_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported model: {name}") from exc
+
+
+def model_impl_version(name: str) -> int:
+    model_name = canonical_model_name(name)
+    try:
+        return MODEL_IMPL_VERSIONS[model_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported model: {name}") from exc
 
 
 def build_model(name: str, num_classes: int, in_channels: int = 3) -> nn.Module:

@@ -2,6 +2,7 @@ dataset: tiny_imagenet
 data_dir: ./data
 model: preact_resnet18
 method: guided_sr
+cross_device_shuffle: false
 
 # XLA batch_size is per device. With 4 TPU devices this keeps global batch 128.
 batch_size: 32
@@ -13,6 +14,7 @@ max_eval_steps: -1
 validation_split: 0.1
 eval_on_test_each_epoch: false
 final_test: true
+final_test_checkpoint: best
 
 learning_rate: 0.1
 momentum: 0.9
@@ -26,11 +28,14 @@ guidedmixup_alpha: 1.0
 guidedmixup_prob: 0.5
 guidedmixup_blur_kernel: 7
 guidedmixup_condition: greedy
+saliency_source: spectral_residual
 
-basic_aug: true
+basic_aug: false
+aug_recipe: tiny_openmixup
 seed: 0
 
 save_csv: true
+run_metadata_required: true
 output_dir: ./outputs
 output_name: ""
 run_name: tiny_imagenet_preact_resnet18_guided_sr_xla4

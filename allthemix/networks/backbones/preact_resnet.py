@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Callable
 
 import torch
 from torch import nn
@@ -30,7 +31,8 @@ class PreActBasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv2 = _conv3x3(planes, planes)
 
-        if stride != 1 or in_planes != self.expansion * planes:
+        self.use_projection_shortcut = stride != 1 or in_planes != self.expansion * planes
+        if self.use_projection_shortcut:
             self.shortcut: nn.Module = nn.Conv2d(
                 in_planes,
                 self.expansion * planes,
@@ -43,7 +45,7 @@ class PreActBasicBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = F.relu(self.bn1(x), inplace=True)
-        shortcut = self.shortcut(out)
+        shortcut = self.shortcut(out) if self.use_projection_shortcut else x
         out = self.conv1(out)
         out = self.conv2(F.relu(self.bn2(out), inplace=True))
         return out + shortcut
@@ -53,6 +55,7 @@ class PreActResNetBackbone(nn.Module):
     """PreAct-ResNet feature extractor without a classifier head."""
 
     output_dim = 512
+    num_feature_hook_layers = 5
 
     def __init__(
         self,
@@ -89,12 +92,26 @@ class PreActResNetBackbone(nn.Module):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        feature_hook: Callable[[torch.Tensor, int], torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         x = self.stem(x)
+        if feature_hook is not None:
+            x = feature_hook(x, 1)
         x = self.layer1(x)
+        if feature_hook is not None:
+            x = feature_hook(x, 2)
         x = self.layer2(x)
+        if feature_hook is not None:
+            x = feature_hook(x, 3)
         x = self.layer3(x)
+        if feature_hook is not None:
+            x = feature_hook(x, 4)
         x = self.layer4(x)
+        if feature_hook is not None:
+            x = feature_hook(x, 5)
         x = F.relu(self.bn(x), inplace=True)
         x = F.adaptive_avg_pool2d(x, 1)
         return torch.flatten(x, 1)

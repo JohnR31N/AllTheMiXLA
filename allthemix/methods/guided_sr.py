@@ -42,6 +42,27 @@ def _validate_targets(images: torch.Tensor, targets: torch.Tensor, method_name: 
         )
 
 
+def _validate_partner_batch(
+    images: torch.Tensor,
+    partner_images: torch.Tensor,
+    partner_targets: torch.Tensor,
+    index: torch.Tensor,
+    method_name: str,
+) -> None:
+    _validate_nchw_images(partner_images, f"{method_name} partner")
+    if partner_images.shape != images.shape:
+        raise ValueError(
+            f"{method_name} partner images must match image shape: "
+            f"images={tuple(images.shape)}, partners={tuple(partner_images.shape)}"
+        )
+    _validate_targets(partner_images, partner_targets, f"{method_name} partner")
+    if index.dim() != 1 or index.size(0) != images.size(0):
+        raise ValueError(
+            f"{method_name} partner index must be a 1D tensor with one entry per image: "
+            f"index={tuple(index.shape)}, images batch={images.size(0)}"
+        )
+
+
 def _validate_probability(name: str, value: float) -> None:
     if value < 0.0 or value > 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value}.")
@@ -87,6 +108,15 @@ def normalize_saliency_maps(saliency_maps: torch.Tensor, eps: float = 1e-8) -> t
     return saliency_maps / (saliency_sum + eps)
 
 
+def minmax_normalize_saliency_maps(saliency_maps: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Normalize each saliency map to [0, 1] like the reference SR preprocessor."""
+
+    saliency_maps = saliency_maps.to(dtype=torch.float32)
+    saliency_maps = saliency_maps - saliency_maps.amin(dim=(-2, -1), keepdim=True)
+    scale = saliency_maps.amax(dim=(-2, -1), keepdim=True)
+    return saliency_maps / (scale + eps)
+
+
 def make_gaussian_kernel_1d(kernel_size: int, sigma: float = 3.0, device=None, dtype=None) -> torch.Tensor:
     _validate_odd_positive_int("guidedmixup_blur_kernel", int(kernel_size))
     if kernel_size <= 1:
@@ -103,7 +133,7 @@ def gaussian_blur_2d_single_channel(
     kernel_size: int,
     sigma: float = 3.0,
 ) -> torch.Tensor:
-    """Apply torchvision-style reflect-padded separable Gaussian blur."""
+    """Apply edge-padded separable Gaussian blur."""
 
     _validate_odd_positive_int("guidedmixup_blur_kernel", int(kernel_size))
     if kernel_size <= 1:
@@ -119,8 +149,8 @@ def gaussian_blur_2d_single_channel(
     kernel_y = kernel.view(1, 1, -1, 1)
     kernel_x = kernel.view(1, 1, 1, -1)
 
-    blurred = F.conv2d(F.pad(saliency_maps, (0, 0, pad, pad), mode="reflect"), kernel_y)
-    return F.conv2d(F.pad(blurred, (pad, pad, 0, 0), mode="reflect"), kernel_x)
+    blurred = F.conv2d(F.pad(saliency_maps, (0, 0, pad, pad), mode="replicate"), kernel_y)
+    return F.conv2d(F.pad(blurred, (pad, pad, 0, 0), mode="replicate"), kernel_x)
 
 
 def mean_filter_2d_single_channel(values: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
@@ -146,6 +176,27 @@ def rgb_to_grayscale(images: torch.Tensor) -> torch.Tensor:
 
     weights = torch.tensor([0.2989, 0.5870, 0.1140], device=images.device, dtype=torch.float32).view(1, 3, 1, 1)
     return (images.to(dtype=torch.float32) * weights).sum(dim=1, keepdim=True)
+
+
+def denormalize_images_for_saliency(
+    images: torch.Tensor,
+    mean: tuple[float, ...] | list[float] | None = None,
+    std: tuple[float, ...] | list[float] | None = None,
+) -> torch.Tensor:
+    """Undo dataset normalization before computing image-space saliency maps."""
+
+    if mean is None or std is None:
+        return images
+    if images.dim() != 4:
+        return images
+    if images.size(1) != len(mean) or images.size(1) != len(std):
+        raise ValueError(
+            "saliency normalization stats must match image channels: "
+            f"channels={images.size(1)}, mean={len(mean)}, std={len(std)}."
+        )
+    mean_tensor = torch.as_tensor(mean, device=images.device, dtype=images.dtype).view(1, -1, 1, 1)
+    std_tensor = torch.as_tensor(std, device=images.device, dtype=images.dtype).view(1, -1, 1, 1)
+    return torch.clamp(images * std_tensor + mean_tensor, 0.0, 1.0)
 
 
 def compute_spectral_residual_saliency_maps(
@@ -179,7 +230,7 @@ def compute_spectral_residual_saliency_maps(
     if needs_resize:
         saliency_maps = F.interpolate(saliency_maps, size=(image_height, image_width), mode="bilinear", align_corners=False)
 
-    return torch.clamp(saliency_maps, min=0.0)
+    return minmax_normalize_saliency_maps(torch.clamp(saliency_maps, min=0.0))
 
 
 def compute_l2_distance_matrix(saliency_maps: torch.Tensor) -> torch.Tensor:
@@ -234,6 +285,10 @@ def guidedmixup_from_saliency(
     saliency_maps: torch.Tensor,
     blur_kernel: int = 7,
     condition: str = "greedy",
+    partner_images: torch.Tensor | None = None,
+    partner_targets: torch.Tensor | None = None,
+    partner_saliency_maps: torch.Tensor | None = None,
+    index: torch.Tensor | None = None,
     eps: float = 1e-8,
 ) -> GuidedSRResult:
     _validate_nchw_images(images, "GuidedMixup")
@@ -245,10 +300,27 @@ def guidedmixup_from_saliency(
     saliency_maps = gaussian_blur_2d_single_channel(saliency_maps, kernel_size=int(blur_kernel), sigma=3.0)
     saliency_maps = normalize_saliency_maps(saliency_maps, eps=eps)
 
-    index = build_pairing(saliency_maps, condition=condition)
-    paired_images = images[index]
-    paired_targets = targets[index]
-    paired_saliency_maps = saliency_maps[index]
+    if partner_images is None:
+        index = build_pairing(saliency_maps, condition=condition)
+        paired_images = images[index]
+        paired_targets = targets[index]
+        paired_saliency_maps = saliency_maps[index]
+    else:
+        if partner_targets is None or index is None:
+            raise ValueError("partner_targets and index are required when partner_images is provided.")
+        _validate_partner_batch(images, partner_images, partner_targets, index, "GuidedMixup")
+        if partner_saliency_maps is None:
+            raise ValueError("partner_saliency_maps are required when partner_images is provided.")
+        paired_images = partner_images
+        paired_targets = partner_targets
+        paired_saliency_maps = ensure_nchw_saliency_maps(partner_saliency_maps, partner_images)
+        paired_saliency_maps = normalize_saliency_maps(paired_saliency_maps, eps=eps)
+        paired_saliency_maps = gaussian_blur_2d_single_channel(
+            paired_saliency_maps,
+            kernel_size=int(blur_kernel),
+            sigma=3.0,
+        )
+        paired_saliency_maps = normalize_saliency_maps(paired_saliency_maps, eps=eps)
 
     pixel_mask = saliency_maps / (saliency_maps + paired_saliency_maps + eps)
     guided_images = pixel_mask.to(dtype=images.dtype) * images + (1.0 - pixel_mask.to(dtype=images.dtype)) * paired_images
@@ -274,33 +346,58 @@ class GuidedSR:
         blur_kernel: int = 7,
         condition: str = "greedy",
         eps: float = 1e-8,
+        saliency_mean: tuple[float, ...] | list[float] | None = None,
+        saliency_std: tuple[float, ...] | list[float] | None = None,
     ) -> None:
         _validate_positive("guidedmixup_alpha", float(alpha))
         _validate_odd_positive_int("guidedmixup_blur_kernel", int(blur_kernel))
         if str(condition).lower() not in {"random", "greedy"}:
             raise ValueError(f"guidedmixup_condition must be one of: random, greedy. Got {condition}.")
+        # AllTheMix keeps alpha for the shared MixDA interface, but Guided-SR's
+        # saliency-ratio mask formula does not sample from a beta distribution.
         self.alpha = float(alpha)
         self.blur_kernel = int(blur_kernel)
         self.condition = str(condition).lower()
         self.eps = float(eps)
+        self.saliency_mean = tuple(float(value) for value in saliency_mean) if saliency_mean is not None else None
+        self.saliency_std = tuple(float(value) for value in saliency_std) if saliency_std is not None else None
 
     def __call__(
         self,
         images: torch.Tensor,
         targets: torch.Tensor,
         saliency_maps: torch.Tensor | None = None,
+        partner_images: torch.Tensor | None = None,
+        partner_targets: torch.Tensor | None = None,
+        partner_saliency_maps: torch.Tensor | None = None,
+        index: torch.Tensor | None = None,
         **_: object,
     ) -> GuidedSRResult:
         _validate_nchw_images(images, "Guided-SR")
         _validate_targets(images, targets, "Guided-SR")
         if saliency_maps is None:
-            saliency_maps = compute_spectral_residual_saliency_maps(images, blur_kernel=self.blur_kernel)
+            saliency_images = denormalize_images_for_saliency(images, self.saliency_mean, self.saliency_std)
+            saliency_maps = compute_spectral_residual_saliency_maps(saliency_images, blur_kernel=self.blur_kernel)
+        if partner_images is not None and partner_saliency_maps is None:
+            saliency_partner_images = denormalize_images_for_saliency(
+                partner_images,
+                self.saliency_mean,
+                self.saliency_std,
+            )
+            partner_saliency_maps = compute_spectral_residual_saliency_maps(
+                saliency_partner_images,
+                blur_kernel=self.blur_kernel,
+            )
         return guidedmixup_from_saliency(
             images=images,
             targets=targets,
             saliency_maps=saliency_maps,
             blur_kernel=self.blur_kernel,
             condition=self.condition,
+            partner_images=partner_images,
+            partner_targets=partner_targets,
+            partner_saliency_maps=partner_saliency_maps,
+            index=index,
             eps=self.eps,
         )
 
@@ -312,6 +409,7 @@ def guided_sr(
     prob: float = 1.0,
     blur_kernel: int = 7,
     condition: str = "greedy",
+    saliency_maps: torch.Tensor | None = None,
 ) -> GuidedSRResult:
     """Functional Guided-SR wrapper with batch-level probability."""
 
@@ -326,4 +424,8 @@ def guided_sr(
         index = torch.arange(images.size(0), device=images.device)
         mask = torch.ones_like(saliency_maps)
         return GuidedSRResult(images, targets, targets, lam, index, saliency_maps, mask)
-    return GuidedSR(alpha=alpha, blur_kernel=blur_kernel, condition=condition)(images, targets)
+    return GuidedSR(alpha=alpha, blur_kernel=blur_kernel, condition=condition)(
+        images,
+        targets,
+        saliency_maps=saliency_maps,
+    )

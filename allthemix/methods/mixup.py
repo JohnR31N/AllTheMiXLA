@@ -13,6 +13,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from allthemix.methods.cutmix import no_repeat_permutation, validate_nchw_images, validate_partner_batch, validate_targets
+
 
 def sample_lam(alpha: float) -> float:
     if alpha <= 0:
@@ -32,8 +34,9 @@ class MixUpResult:
 class MixUp:
     """Apply MixUp to a mini-batch."""
 
-    def __init__(self, alpha: float = 1.0) -> None:
+    def __init__(self, alpha: float = 1.0, no_repeat: bool = False) -> None:
         self.alpha = float(alpha)
+        self.no_repeat = bool(no_repeat)
 
     def __call__(
         self,
@@ -43,16 +46,24 @@ class MixUp:
         partner_targets: torch.Tensor | None = None,
         index: torch.Tensor | None = None,
     ) -> MixUpResult:
-        if images.dim() != 4:
-            raise ValueError(f"MixUp expects NCHW images, got shape {tuple(images.shape)}")
+        validate_nchw_images(images, "MixUp")
+        validate_targets(images, targets, "MixUp")
+        if self.no_repeat and images.size(0) <= 1:
+            raise ValueError("MixUp no_repeat requires batch size > 1.")
 
         lam = sample_lam(self.alpha)
         if partner_images is None:
-            index = torch.randperm(images.size(0)).to(images.device)
+            index = (
+                no_repeat_permutation(images.size(0), images.device)
+                if self.no_repeat
+                else torch.randperm(images.size(0), device=images.device)
+            )
             partner_images = images[index]
             partner_targets = targets[index]
         elif partner_targets is None or index is None:
             raise ValueError("partner_targets and index are required when partner_images is provided.")
+        else:
+            validate_partner_batch(images, partner_images, partner_targets, index, "MixUp")
 
         mixed = lam * images + (1.0 - lam) * partner_images
         return MixUpResult(

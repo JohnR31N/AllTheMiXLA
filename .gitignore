@@ -16,6 +16,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!scripts/lib/
+!scripts/lib/*.sh
 parts/
 sdist/
 var/
@@ -151,6 +153,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venvxla/
 env/
 venv/
 ENV/
@@ -208,6 +211,7 @@ tempCodeRunnerFile.py
 
 # Local datasets and experiment outputs
 /data/
+/outputs/
 /runs/
 /checkpoints/
 /saved_models/

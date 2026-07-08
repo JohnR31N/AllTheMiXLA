@@ -14,6 +14,7 @@ max_eval_steps: -1
 validation_split: 0.1
 eval_on_test_each_epoch: false
 final_test: true
+final_test_checkpoint: best
 
 learning_rate: 0.1
 momentum: 0.9
@@ -25,15 +26,21 @@ lr_decay_rate: 0.1
 
 saliencymix_alpha: 1.0
 saliencymix_prob: 0.5
-# Fast TPU smoke-test source. For official SaliencyMix, generate/load
-# precomputed maps and set saliency_source: batch.
-saliency_source: gradient
+saliencymix_no_repeat: false
+# Table/full-run source. Generate this cache with:
+# python -m allthemix.cli.build_saliency_cache --config configs/tiny_imagenet/preact_resnet18/saliencymix_xla4.yaml
+# For quick TPU smoke tests without a cache, override with --saliency-source gradient.
+saliency_source: batch
+saliency_dir: ./data
 guidedmixup_blur_kernel: 7
 
 basic_aug: false
+sal_basic_aug: false
+sal_aug_recipe: tiny_openmixup
 seed: 0
 
 save_csv: true
+run_metadata_required: true
 output_dir: ./outputs
 output_name: ""
 run_name: tiny_imagenet_preact_resnet18_saliencymix_xla4

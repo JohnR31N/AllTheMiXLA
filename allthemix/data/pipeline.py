@@ -7,7 +7,7 @@ from pathlib import Path
 from torchvision import datasets
 
 from allthemix.cli.presets import DatasetPreset
-from allthemix.data.datasets import TinyImageNet
+from allthemix.data.datasets import IMAGENET_A_WNIDS, IMAGENET_A_WNID_TO_REDUCED_INDEX, TinyImageNet
 from allthemix.data.preprocessors import build_preprocess_pair
 
 
@@ -54,17 +54,40 @@ def _imagenet_a_root(data_dir: str | Path) -> Path:
     return root / "imagenet-a"
 
 
+def _remap_imagenet_a_targets(dataset: datasets.ImageFolder) -> datasets.ImageFolder:
+    unknown_classes = sorted(set(dataset.classes) - set(IMAGENET_A_WNIDS))
+    if unknown_classes:
+        preview = ", ".join(unknown_classes[:5])
+        suffix = "" if len(unknown_classes) <= 5 else ", ..."
+        raise ValueError(f"ImageNet-A contains class directories outside the official 200 wnids: {preview}{suffix}")
+
+    original_to_reduced = {
+        original_index: IMAGENET_A_WNID_TO_REDUCED_INDEX[class_name]
+        for class_name, original_index in dataset.class_to_idx.items()
+    }
+    dataset.samples = [(path, original_to_reduced[target]) for path, target in dataset.samples]
+    dataset.imgs = dataset.samples
+    dataset.targets = [target for _, target in dataset.samples]
+    dataset.classes = list(IMAGENET_A_WNIDS)
+    dataset.class_to_idx = dict(IMAGENET_A_WNID_TO_REDUCED_INDEX)
+    return dataset
+
+
 def build_datasets(
     preset: DatasetPreset,
     recipe_profile: str,
     data_dir: str | Path,
     download: bool = False,
     use_basic_augmentation: bool = True,
+    augmentation_recipe: str | None = None,
+    normalize_train: bool = True,
 ):
     train_transform, val_transform = build_preprocess_pair(
         preset,
         recipe_profile,
         use_basic_augmentation,
+        augmentation_recipe,
+        normalize_train=normalize_train,
     )
 
     if preset.name == "cifar10":
@@ -92,8 +115,8 @@ def build_datasets(
             and class_folder_val.exists()
             and any(path.is_dir() for path in class_folder_val.iterdir())
         ):
-            train_set = datasets.ImageFolder(str(root / "train"), transform=train_transform)
-            val_set = datasets.ImageFolder(str(root / "val"), transform=val_transform)
+            train_set = TinyImageNet(root, train=True, transform=train_transform)
+            val_set = TinyImageNet(root, train=False, transform=val_transform)
             return train_set, val_set
 
         raise FileNotFoundError(
@@ -108,7 +131,7 @@ def build_datasets(
                 f"ImageNet-A not found at {root}. Expected ImageFolder class directories "
                 "such as imagenet-a/n01498041/*.jpg."
             )
-        val_set = datasets.ImageFolder(str(root), transform=val_transform)
+        val_set = _remap_imagenet_a_targets(datasets.ImageFolder(str(root), transform=val_transform))
         return None, val_set
 
     raise ValueError(f"Unsupported dataset: {preset.name}")

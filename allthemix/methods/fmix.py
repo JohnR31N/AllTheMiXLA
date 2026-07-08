@@ -18,6 +18,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from allthemix.methods.cutmix import no_repeat_permutation, validate_nchw_images, validate_partner_batch, validate_targets
+
 
 ShapeLike = int | Sequence[int]
 
@@ -156,7 +158,7 @@ class FMixResult:
     images: torch.Tensor
     targets_a: torch.Tensor
     targets_b: torch.Tensor
-    lam: float
+    lam: float | torch.Tensor
     index: torch.Tensor
     mask: torch.Tensor
 
@@ -179,12 +181,14 @@ class FMix:
         size: ShapeLike = (32, 32),
         max_soft: float = 0.0,
         reformulate: bool = False,
+        no_repeat: bool = False,
     ) -> None:
         self.decay_power = float(decay_power)
         self.alpha = float(alpha)
         self.size = _shape_tuple(size)
         self.max_soft = float(max_soft)
         self.reformulate = bool(reformulate)
+        self.no_repeat = bool(no_repeat)
 
     def __call__(
         self,
@@ -194,10 +198,12 @@ class FMix:
         partner_targets: torch.Tensor | None = None,
         index: torch.Tensor | None = None,
     ) -> FMixResult:
-        if images.dim() != 4:
-            raise ValueError(f"FMix expects NCHW images, got shape {tuple(images.shape)}")
+        validate_nchw_images(images, "FMix")
+        validate_targets(images, targets, "FMix")
+        if self.no_repeat and images.size(0) <= 1:
+            raise ValueError("FMix no_repeat requires batch size > 1.")
 
-        lam, mask_np = sample_mask(
+        _, mask_np = sample_mask(
             self.alpha,
             self.decay_power,
             self.size,
@@ -205,20 +211,27 @@ class FMix:
             self.reformulate,
         )
         if partner_images is None:
-            index = torch.randperm(images.size(0)).to(images.device)
+            index = (
+                no_repeat_permutation(images.size(0), images.device)
+                if self.no_repeat
+                else torch.randperm(images.size(0), device=images.device)
+            )
             partner_images = images[index]
             partner_targets = targets[index]
         elif partner_targets is None or index is None:
             raise ValueError("partner_targets and index are required when partner_images is provided.")
+        else:
+            validate_partner_batch(images, partner_images, partner_targets, index, "FMix")
 
         mask = torch.from_numpy(mask_np).to(device=images.device, dtype=images.dtype)
+        adjusted_lam = mask.mean()
 
         mixed = mask * images + (1 - mask) * partner_images
         return FMixResult(
             images=mixed,
             targets_a=targets,
             targets_b=partner_targets,
-            lam=lam,
+            lam=adjusted_lam,
             index=index,
             mask=mask,
         )
@@ -228,11 +241,18 @@ def fmix_cross_entropy(
     logits: torch.Tensor,
     targets_a: torch.Tensor,
     targets_b: torch.Tensor,
-    lam: float,
+    lam: float | torch.Tensor,
     reformulate: bool = False,
 ) -> torch.Tensor:
     """FMix criterion from the official PyTorch binding."""
 
     if reformulate:
         return F.cross_entropy(logits, targets_a)
+    if isinstance(lam, torch.Tensor):
+        lam_tensor = lam.to(device=logits.device, dtype=logits.dtype)
+        loss_a = F.cross_entropy(logits, targets_a, reduction="none")
+        loss_b = F.cross_entropy(logits, targets_b, reduction="none")
+        if lam_tensor.dim() == 0:
+            return (loss_a * lam_tensor + loss_b * (1.0 - lam_tensor)).mean()
+        return (loss_a * lam_tensor.reshape(-1) + loss_b * (1.0 - lam_tensor.reshape(-1))).mean()
     return F.cross_entropy(logits, targets_a) * lam + F.cross_entropy(logits, targets_b) * (1.0 - lam)

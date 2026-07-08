@@ -14,8 +14,13 @@ class ImageClassifier(nn.Module):
         self.backbone = backbone
         self.head = head
 
-    def forward(self, x: torch.Tensor, return_features: bool = False):
-        features = self.backbone(x)
+    def forward(self, x: torch.Tensor, return_features: bool = False, feature_hook=None):
+        try:
+            features = self.backbone(x, feature_hook=feature_hook)
+        except TypeError:
+            if feature_hook is not None:
+                raise
+            features = self.backbone(x)
         logits = self.head(features)
         if return_features:
             return logits, features

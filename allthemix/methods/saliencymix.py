@@ -13,12 +13,15 @@ import random
 import numpy as np
 import torch
 
+from allthemix.methods.cutmix import no_repeat_permutation
 from allthemix.methods.guided_sr import (
     _validate_nchw_images,
+    _validate_partner_batch,
     _validate_positive,
     _validate_probability,
     _validate_targets,
     compute_spectral_residual_saliency_maps,
+    denormalize_images_for_saliency,
     ensure_nchw_saliency_maps,
     rgb_to_grayscale,
 )
@@ -100,6 +103,7 @@ class SaliencyMix:
         saliency_source: ``"batch"`` requires saliency maps from the dataloader.
             ``"spectral_residual"`` computes online maps when none are passed.
         blur_kernel: Kernel used by the online spectral-residual fallback.
+        no_repeat: Avoid self-pairs when the partner batch is sampled locally.
     """
 
     def __init__(
@@ -107,11 +111,17 @@ class SaliencyMix:
         alpha: float = 1.0,
         saliency_source: str = "spectral_residual",
         blur_kernel: int = 7,
+        no_repeat: bool = False,
+        saliency_mean: tuple[float, ...] | list[float] | None = None,
+        saliency_std: tuple[float, ...] | list[float] | None = None,
     ) -> None:
         _validate_positive("saliencymix_alpha", float(alpha))
         self.alpha = float(alpha)
         self.saliency_source = str(saliency_source).lower()
         self.blur_kernel = int(blur_kernel)
+        self.no_repeat = bool(no_repeat)
+        self.saliency_mean = tuple(float(value) for value in saliency_mean) if saliency_mean is not None else None
+        self.saliency_std = tuple(float(value) for value in saliency_std) if saliency_std is not None else None
 
     def _resolve_saliency_maps(
         self,
@@ -120,10 +130,11 @@ class SaliencyMix:
     ) -> torch.Tensor:
         if saliency_maps is not None:
             return ensure_nchw_saliency_maps(saliency_maps, images)
+        saliency_images = denormalize_images_for_saliency(images, self.saliency_mean, self.saliency_std)
         if self.saliency_source in {"gradient", "grad"}:
-            return compute_gradient_saliency_maps(images)
+            return compute_gradient_saliency_maps(saliency_images)
         if self.saliency_source in {"spectral_residual", "guided_sr", "sr", "online"}:
-            return compute_spectral_residual_saliency_maps(images, blur_kernel=self.blur_kernel)
+            return compute_spectral_residual_saliency_maps(saliency_images, blur_kernel=self.blur_kernel)
         raise ValueError(
             "SaliencyMix requires saliency maps when saliency_source='batch'. "
             "Pass batch item (images, labels, saliency_maps) or set saliency_source: gradient/spectral_residual."
@@ -141,19 +152,27 @@ class SaliencyMix:
     ) -> SaliencyMixResult:
         _validate_nchw_images(images, "SaliencyMix")
         _validate_targets(images, targets, "SaliencyMix")
+        if self.no_repeat and images.size(0) <= 1:
+            raise ValueError("SaliencyMix no_repeat requires batch size > 1.")
 
         saliency_maps = self._resolve_saliency_maps(images, saliency_maps)
         if partner_images is None:
-            index = torch.randperm(images.size(0), device=images.device)
+            index = (
+                no_repeat_permutation(images.size(0), images.device)
+                if self.no_repeat
+                else torch.randperm(images.size(0), device=images.device)
+            )
             partner_images = images[index]
             partner_targets = targets[index]
             partner_saliency_maps = saliency_maps[index]
         elif partner_targets is None or index is None:
             raise ValueError("partner_targets and index are required when partner_images is provided.")
-        elif partner_saliency_maps is None:
-            partner_saliency_maps = self._resolve_saliency_maps(partner_images, None)
         else:
-            partner_saliency_maps = ensure_nchw_saliency_maps(partner_saliency_maps, partner_images)
+            _validate_partner_batch(images, partner_images, partner_targets, index, "SaliencyMix")
+            if partner_saliency_maps is None:
+                partner_saliency_maps = self._resolve_saliency_maps(partner_images, None)
+            else:
+                partner_saliency_maps = ensure_nchw_saliency_maps(partner_saliency_maps, partner_images)
 
         lam = sample_lam(self.alpha)
         image_height, image_width = int(images.size(-2)), int(images.size(-1))
@@ -192,6 +211,9 @@ def saliencymix(
     prob: float = 0.5,
     saliency_source: str = "spectral_residual",
     blur_kernel: int = 7,
+    no_repeat: bool = False,
+    saliency_mean: tuple[float, ...] | list[float] | None = None,
+    saliency_std: tuple[float, ...] | list[float] | None = None,
 ) -> SaliencyMixResult:
     """Functional SaliencyMix wrapper with batch-level probability."""
 
@@ -205,7 +227,14 @@ def saliencymix(
         index = torch.arange(images.size(0), device=images.device)
         mask = torch.zeros_like(clean_saliency, dtype=torch.bool)
         return SaliencyMixResult(images, targets, targets, 1.0, index, mask, clean_saliency)
-    return SaliencyMix(alpha=alpha, saliency_source=saliency_source, blur_kernel=blur_kernel)(
+    return SaliencyMix(
+        alpha=alpha,
+        saliency_source=saliency_source,
+        blur_kernel=blur_kernel,
+        no_repeat=no_repeat,
+        saliency_mean=saliency_mean,
+        saliency_std=saliency_std,
+    )(
         images,
         targets,
         saliency_maps=saliency_maps,
